@@ -75,6 +75,19 @@ describe('the validator rejects what it claims to reject', () => {
       .toMatch(/sourceUrl is required/);
   });
 
+  it('checks a url on EVERY row that has one, not only the live ones', () => {
+    // /review caught this: the url parse used to live inside the live branch,
+    // so a dead or unsourced row could carry "garbage" as its sourceUrl and
+    // nothing ever looked at it. Required-ness and well-formedness are two
+    // different rules and they are now checked separately.
+    for (const status of ['dead', 'render_only', 'unsourced'] as const) {
+      expect(
+        catalogRowProblems(goodRow({ status, sourceUrl: 'garbage' })).join(' '),
+        `a ${status} row with a malformed url slipped through`,
+      ).toMatch(/is not a URL/);
+    }
+  });
+
   it('lets a non-live row drop its url only when it says why', () => {
     expect(catalogRowProblems(goodRow({ status: 'dead', sourceUrl: null, source: 'None.' })).join(' '))
       .toMatch(/source must say why/);

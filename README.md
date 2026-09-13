@@ -418,11 +418,17 @@ looked. The test bans the bare word, and `status` carries the real answer:
 
 | status | means |
 |---|---|
-| `live` | a real feed answers, today, on the stated cadence |
-| `dead` | wired into the app, and nothing answers or nothing reads it |
+| `live` | wired to a named upstream, with no evidence in the code that it fails |
+| `dead` | wired into the app and provably broken: the route is missing, or nothing reads the id |
 | `render_only` | a drawing toggle with no data behind it by design |
 | `unsourced` | real data ships, hardcoded here, with no upstream |
 | `catalogued` | a real upstream is named and nothing here fetches it yet |
+
+**`status` is a reading of the code, not a health check.** No feed was called
+when these rows were written. `live` does not mean anyone watched it answer,
+and a consumer that needs real availability must measure it rather than read it
+off this field. `dead` is the one status backed by hard evidence, because a
+missing route and an unread id are both visible in the source.
 
 ### What cataloguing the layers turned up
 
@@ -431,9 +437,9 @@ app said so before these rows did:
 
 - **`balloons`** and **`radiation`** are fetched every five minutes against
   `/api/balloons` and `/api/radiation`, and neither route exists.
-- **`war_alerts`** is read by nothing at all. The id appears exactly once in
-  the whole of `src/`, as its own boot default. The door accepts it and acks a
-  change that cannot happen.
+- **`war_alerts`** is read by nothing at all. No component, effect or route
+  references it; its only appearances in `src/` are its own boot default and
+  its catalogue row. The door accepts it and acks a change that cannot happen.
 
 All three are also among the six layer ids with no toggle in the layer panel
 (`balloons`, `radiation`, `war_alerts`, `cables`, `sdk_air`, `sdk_naval`), so

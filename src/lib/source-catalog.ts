@@ -108,9 +108,12 @@ const WORLD_MONITOR: SourceRow[] = [
 ];
 
 /** Power first, then World-Monitor, in the order row 313-22 named them. */
-export const SOURCE_ROWS: SourceRow[] = [...POWER, ...WORLD_MONITOR];
+export const SOURCE_ROWS: readonly SourceRow[] = [...POWER, ...WORLD_MONITOR];
 
-/** Built once at module scope: 313-21 and 313-23 look rows up per source. */
+/**
+ * Built once at module scope, so it is a snapshot, which is why SOURCE_ROWS is
+ * readonly: a pushed row would be in the array and invisible to sourceRow().
+ */
 const SOURCE_BY_ID: ReadonlyMap<string, SourceRow> = new Map(
   SOURCE_ROWS.map(row => [row.id, row]),
 );

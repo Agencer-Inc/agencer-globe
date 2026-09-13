@@ -96,8 +96,16 @@ export const LAYER_IDS = Object.keys(DEFAULT_ACTIVE_LAYERS) as LayerId[];
  * say which of these it is has not been researched, and a text field reading
  * "unknown" would pass a not-empty check while proving nothing (Law 31).
  *
- *   live         a real feed answers, today, on the stated cadence
- *   dead         wired up in the app but nothing answers, or nothing reads it
+ * READ THIS BEFORE TRUSTING A STATUS. Every value here is a judgment recorded
+ * from reading the code, NOT the result of probing anything. No feed was
+ * called on the leg that wrote these rows. `live` means this app is wired to a
+ * named upstream and nothing in the code says it is broken; it does not mean
+ * someone watched it answer. A consumer that needs real health has to measure
+ * it, and must not read that off this field (Law 3).
+ *
+ *   live         wired to a named upstream, with no evidence here that it fails
+ *   dead         wired up in the app and provably not working: the route is
+ *                missing, or nothing reads the id at all
  *   render_only  a drawing toggle with no data behind it by design
  *   unsourced    real data ships, but hardcoded in this repo with no upstream
  *   catalogued   a real upstream exists and is named, and nothing here fetches
@@ -179,18 +187,22 @@ export function catalogRowProblems(row: CatalogRow): string[] {
   // catalogued row exists precisely so someone can go and read that source's
   // licence, and a row pointing nowhere cannot be read.
   if (row.status === 'live' || row.status === 'catalogued') {
-    if (row.sourceUrl === null) {
-      problems.push(`status is ${row.status}, so sourceUrl is required`);
-    } else {
-      try {
-        new URL(row.sourceUrl);
-      } catch {
-        problems.push(`sourceUrl is not a URL: ${row.sourceUrl}`);
-      }
-    }
+    if (row.sourceUrl === null) problems.push(`status is ${row.status}, so sourceUrl is required`);
   } else if (row.sourceUrl === null && row.source.trim().length <= 20) {
     // A null url is allowed away from `live`, but only when the row says why.
     problems.push(`status is ${row.status} with no url, so source must say why`);
+  }
+
+  // Separate from the required-ness rule above on purpose. Parsing the url
+  // only inside the live branch let a `dead` or `unsourced` row carry a
+  // malformed url unchallenged, because nothing on that path ever looked at it.
+  // If a url is present at all, it has to be one.
+  if (row.sourceUrl !== null) {
+    try {
+      new URL(row.sourceUrl);
+    } catch {
+      problems.push(`sourceUrl is not a URL: ${row.sourceUrl}`);
+    }
   }
 
   return problems;
@@ -223,7 +235,7 @@ const TLE_CADENCE = 'Fetched once per session and never re-polled; positions are
  * do not exist, and `war_alerts` is read by nothing at all. The door accepts
  * all three. Recording that was the point of the status field.
  */
-export const OSIRIS_LAYERS: OsirisRow[] = [
+export const OSIRIS_LAYERS: readonly OsirisRow[] = [
   {
     id: 'flights', kind: 'osiris', doorKey: 'flights', status: 'live',
     words: 'Commercial airliners currently in the air, from crowd-sourced ADS-B receivers.',
@@ -369,7 +381,7 @@ export const OSIRIS_LAYERS: OsirisRow[] = [
   {
     id: 'war_alerts', kind: 'osiris', doorKey: 'war_alerts', status: 'dead',
     words: 'Nothing. This layer id exists and no code anywhere reads it.',
-    source: 'None. The id appears exactly once in the whole of src/, as its own boot default in this file. Nothing fetches it, nothing draws it, and the layer panel has no toggle for it, yet the control door accepts it and acks a change that cannot happen.',
+    source: 'None. No component, effect or route reads this id: its only appearances in src/ are its own boot default and this catalogue row. Nothing fetches it, nothing draws it, and the layer panel has no toggle for it, yet the control door accepts it and acks a change that cannot happen.',
     cadence: 'Never. There is nothing to refresh.',
     licence: 'None to record. This layer has never carried data.',
     sourceUrl: null,
@@ -466,7 +478,15 @@ export const OSIRIS_LAYERS: OsirisRow[] = [
   },
 ];
 
-/** Built once at module scope: 313-21 and 313-23 look rows up per layer. */
+/**
+ * Built once at module scope: 313-21 and 313-23 look rows up per layer, and a
+ * linear scan per layer per frame is the wrong shape for that.
+ *
+ * Built once means it is a SNAPSHOT, which is why OSIRIS_LAYERS above is
+ * readonly. If that array were mutable, a consumer could push a row and get an
+ * array and a lookup that disagree: the row would be in OSIRIS_LAYERS and
+ * invisible to osirisLayer(). The type is what stops that, not a convention.
+ */
 const OSIRIS_BY_ID: ReadonlyMap<string, OsirisRow> = new Map(
   OSIRIS_LAYERS.map(row => [row.id, row]),
 );
