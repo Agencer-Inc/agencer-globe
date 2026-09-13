@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Layers, BarChart3, Newspaper, Search, X, Globe, MapPinned, Route, Radar, Satellite, Moon, ExternalLink, AlertTriangle, Activity, Database, Wifi, Play, Network, Crosshair, Bluetooth, Pentagon, Radio , PenLine, ShoppingBag } from 'lucide-react';
 import { type TerrainStatus } from '@/lib/map-terrain';
 import { loadCameraCatalog, mergeCameraCatalog } from '@/lib/camera-catalog';
+import { installControlDoor, parseAllowedOrigins, type Command as ControlCommand } from '@/lib/control-door';
 import IntelFeed from '@/components/IntelFeed';
 import MarketsPanel from '@/components/MarketsPanel';
 import ScmPanel from '@/components/ScmPanel';
@@ -404,10 +405,89 @@ export default function Dashboard() {
     if (urlTimer.current) clearTimeout(urlTimer.current);
     urlTimer.current = setTimeout(() => {
       const active = Object.entries(activeLayers).filter(([,v]) => v).map(([k]) => k).join(',');
-      const url = `${window.location.pathname}?layers=${active}`;
-      window.history.replaceState(null, '', url);
+      /* Amend the query rather than rebuilding it. This used to write
+         `?layers=...` from scratch, which dropped every other parameter — so
+         the remote-control flag was erased 1500ms after the door's first
+         layers verb, and the door came back disarmed on the next load. */
+      const params = new URLSearchParams(window.location.search);
+      params.set('layers', active);
+      window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
     }, 1500);
   }, [activeLayers]);
+
+  /* ── REMOTE-CONTROL DOOR ──
+     Lets a parent web app drive this page by postMessage, without a reload.
+     Shut unless the URL carries ?control=1 AND the sender's origin is on the
+     allowlist. The verb table, the ack shape and the bounded queue all live in
+     src/lib/control-door.ts, which is where the tests are; this binding only
+     hands it live state and turns commands into setState.
+
+     The ref exists because this effect installs once. Closing over activeLayers
+     or capabilities directly would freeze them at mount, and `data` is worse:
+     page.tsx:141 reads dataRef.current once and the camera loader REASSIGNS
+     that ref (:648), so a closure would see zero cameras forever. */
+  const doorState = useRef({ activeLayers, capabilities });
+  doorState.current = { activeLayers, capabilities };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    return installControlDoor(window, {
+      allowedOrigins: parseAllowedOrigins(process.env.NEXT_PUBLIC_CONTROL_ORIGINS),
+      readContext: () => {
+        const cameras = dataRef.current?.cameras as Array<{ id: string | number }> | undefined;
+        return {
+          knownLayerIds: Object.keys(doorState.current.activeLayers),
+          capabilities: doorState.current.capabilities,
+          /* null, not an empty set: the catalogue arrives progressively and
+             only once the cctv layer is on, so "not here yet" has to stay
+             distinguishable from "no such camera". */
+          cameraIds: cameras?.length ? new Set(cameras.map(c => String(c.id))) : null,
+        };
+      },
+      apply: (command: ControlCommand) => {
+        switch (command.verb) {
+          case 'set_layers':
+            setActiveLayers(prev => {
+              const next = { ...prev };
+              for (const id of command.on) (next as Record<string, boolean>)[id] = true;
+              for (const id of command.off) (next as Record<string, boolean>)[id] = false;
+              return next;
+            });
+            break;
+          case 'fly_to':
+            /* A parent driving the globe never produces the pointerdown or
+               keydown that cancels the 3s IP autolocate (:378-379), so without
+               this every embedded session has its camera yanked back to the
+               viewer's own city three seconds in. */
+            autoLocateCancelled.current = true;
+            setFlyToLocation({ lat: command.lat, lng: command.lng, zoom: command.zoom, ts: Date.now() });
+            break;
+          case 'set_projection':
+            // Matches selectFlatMap (:331-332) and the `g` key (:437-438).
+            if (command.clearTerrain) {
+              setActiveLayers(prev => ({ ...prev, terrain_elevation: false, terrain_3d: false }));
+            }
+            setMapProjection(command.projection);
+            break;
+          case 'open_camera': {
+            const cameras = dataRef.current?.cameras as Array<{ id: string | number }> | undefined;
+            const camera = cameras?.find(c => String(c.id) === command.cameraId) as
+              | { lat?: number; lng?: number }
+              | undefined;
+            if (!camera) return;
+            setActiveCamera({ ...camera, type: 'cctv' });
+            /* Clicking a camera on the map also flies to it (OsirisMap.tsx:973),
+               so the verb does too rather than inventing a second behaviour. */
+            if (Number.isFinite(camera.lat) && Number.isFinite(camera.lng)) {
+              autoLocateCancelled.current = true;
+              setFlyToLocation({ lat: camera.lat as number, lng: camera.lng as number, zoom: 13, ts: Date.now() });
+            }
+            break;
+          }
+        }
+      },
+    });
+  }, []);
 
   // Global Stats Fetch
   useEffect(() => {

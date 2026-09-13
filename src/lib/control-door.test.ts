@@ -32,6 +32,14 @@ const ctx = (over: Partial<DoorContext> = {}): DoorContext => ({
 
 const msg = (over: Record<string, unknown> = {}) => ({ v: PROTOCOL, id: 'r1', ...over });
 
+/**
+ * Accepted verbs are applied on a scheduled flush, not inside the message
+ * handler, because that is the only way a bounded queue can coalesce a burst
+ * that arrives as separate events. Pins that assert on `apply` wait for it.
+ * This waits for the flush; it does not weaken what is asserted after it.
+ */
+const flush = () => Promise.resolve();
+
 afterEach(() => vi.restoreAllMocks());
 
 describe('the flag arms the door', () => {
@@ -42,7 +50,7 @@ describe('the flag arms the door', () => {
     expect(isDoorOpen('?layers=cctv&control=1')).toBe(true);
   });
 
-  it('installs no listener at all when the flag is absent', () => {
+  it('installs no listener at all when the flag is absent', async () => {
     const win = window as unknown as Window;
     const add = vi.spyOn(win, 'addEventListener');
     const apply = vi.fn();
@@ -61,6 +69,7 @@ describe('the flag arms the door', () => {
       data: msg({ verb: 'set_projection', projection: 'mercator' }),
       origin: PARENT,
     }));
+    await flush();
     expect(apply).not.toHaveBeenCalled();
     stop();
   });
@@ -93,7 +102,7 @@ describe('the allowlist', () => {
     expect(decision.deliverAck).toBe(false);
   });
 
-  it('drives nothing when the posting origin is not on the allowlist', () => {
+  it('drives nothing when the posting origin is not on the allowlist', async () => {
     const apply = vi.fn();
     const stop = installControlDoor(window as unknown as Window, {
       allowedOrigins: [PARENT],
@@ -107,6 +116,7 @@ describe('the allowlist', () => {
       origin: 'https://evil.test',
     }));
 
+    await flush();
     expect(apply).not.toHaveBeenCalled();
     stop();
   });
@@ -279,7 +289,7 @@ describe('the bounded queue', () => {
 });
 
 describe('end to end through a real window', () => {
-  it('applies an allowlisted parent\'s verb and acks what changed', () => {
+  it('applies an allowlisted parent\'s verb and acks what changed', async () => {
     const apply = vi.fn();
     const stop = installControlDoor(window as unknown as Window, {
       allowedOrigins: [PARENT],
@@ -296,6 +306,7 @@ describe('end to end through a real window', () => {
     Object.defineProperty(event, 'source', { value: source });
     window.dispatchEvent(event);
 
+    await flush();
     expect(apply).toHaveBeenCalledWith({ verb: 'fly_to', lat: 51.5, lng: -0.12, zoom: 9 });
     expect(source.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ ok: true, id: 'r1', verb: 'fly_to' }),
@@ -304,7 +315,7 @@ describe('end to end through a real window', () => {
     stop();
   });
 
-  it('stops listening after teardown', () => {
+  it('stops listening after teardown', async () => {
     const apply = vi.fn();
     const stop = installControlDoor(window as unknown as Window, {
       allowedOrigins: [PARENT],
@@ -318,6 +329,7 @@ describe('end to end through a real window', () => {
       data: msg({ verb: 'set_projection', projection: 'mercator' }),
       origin: PARENT,
     }));
+    await flush();
     expect(apply).not.toHaveBeenCalled();
   });
 });

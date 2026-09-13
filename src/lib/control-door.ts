@@ -129,25 +129,198 @@ export type Decision =
   | { outcome: 'apply'; command: Command; ack: Ack };
 
 /** True when the page URL carries the control flag. */
-export function isDoorOpen(_search: string): boolean {
-  throw new Error('control-door: isDoorOpen not implemented');
+export function isDoorOpen(search: string): boolean {
+  const value = new URLSearchParams(search).get(CONTROL_FLAG);
+  if (value === null) return false;
+  return value !== '0' && value.toLowerCase() !== 'false';
 }
 
 /** Splits the configured allowlist; falls back to the localhost default. */
-export function parseAllowedOrigins(_raw: string | undefined): string[] {
-  throw new Error('control-door: parseAllowedOrigins not implemented');
+export function parseAllowedOrigins(raw: string | undefined): string[] {
+  const listed = (raw ?? '').split(',').map(entry => entry.trim()).filter(Boolean);
+  return listed.length ? listed : [...DEFAULT_ALLOWED_ORIGINS];
 }
 
-export function isOriginAllowed(_origin: string, _allowed: readonly string[]): boolean {
-  throw new Error('control-door: isOriginAllowed not implemented');
+export function isOriginAllowed(origin: string, allowed: readonly string[]): boolean {
+  // Exact match only. A prefix or suffix test would let app.example.test.evil
+  // .test through, which is the whole reason an allowlist exists.
+  return allowed.includes(origin);
 }
+
+function refusal(
+  id: string | null,
+  verb: ControlVerb | null,
+  refused: RefusalReason,
+  detail: string,
+): Extract<Ack, { ok: false }> {
+  return { v: PROTOCOL, ok: false, id, verb, refused, detail };
+}
+
+const VERBS: readonly string[] = ['set_layers', 'fly_to', 'set_projection', 'open_camera'];
+
+const isVerb = (value: string): value is ControlVerb => VERBS.includes(value);
+
+/** Every entry must be a string naming a layer this build actually has. */
+function badLayerId(ids: unknown, known: readonly string[]): string | null {
+  if (!Array.isArray(ids)) return null;
+  for (const id of ids) {
+    if (typeof id !== 'string' || !known.includes(id)) return String(id);
+  }
+  return null;
+}
+
+const asIdList = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 
 /**
  * The verb table. Pure: same inputs, same decision, no side effects.
  * `trusted` says the origin check already passed.
  */
-export function planVerb(_raw: unknown, _trusted: boolean, _ctx: DoorContext): Decision {
-  throw new Error('control-door: planVerb not implemented');
+export function planVerb(raw: unknown, trusted: boolean, ctx: DoorContext): Decision {
+  // Shape first, and silently. This page hosts third-party camera iframes and
+  // an analytics script, all of which post at this window; none of it is ours
+  // and none of it deserves a reply.
+  if (typeof raw !== 'object' || raw === null) return { outcome: 'ignore', ack: null };
+  const message = raw as Record<string, unknown>;
+  if (typeof message.verb !== 'string') return { outcome: 'ignore', ack: null };
+
+  const id = typeof message.id === 'string' ? message.id : null;
+  const name = message.verb;
+
+  // Before anything else is revealed, including whether the protocol matched.
+  if (!trusted) {
+    return {
+      outcome: 'refuse',
+      ack: refusal(id, null, 'origin_not_allowed', 'sender origin is not on the control allowlist'),
+      deliverAck: false,
+    };
+  }
+
+  if (message.v !== PROTOCOL) {
+    return {
+      outcome: 'refuse',
+      ack: refusal(id, null, 'bad_protocol', `this door speaks v${PROTOCOL}, got ${String(message.v)}`),
+      deliverAck: true,
+    };
+  }
+
+  if (!isVerb(name)) {
+    return {
+      outcome: 'refuse',
+      ack: refusal(id, null, 'unknown_verb', `no such verb: ${name}`),
+      deliverAck: true,
+    };
+  }
+
+  switch (name) {
+    case 'set_layers': {
+      const on = asIdList(message.on);
+      const off = asIdList(message.off);
+      const unknown = badLayerId(message.on, ctx.knownLayerIds) ?? badLayerId(message.off, ctx.knownLayerIds);
+      if (unknown !== null) {
+        return {
+          outcome: 'refuse',
+          ack: refusal(id, name, 'unknown_layer', `no such layer: ${unknown}`),
+          deliverAck: true,
+        };
+      }
+      // The layer panel hides layers this deployment has no credentials for
+      // (LayerPanel.tsx:246). Writing the boolean straight past that would turn
+      // on a layer that can never carry data and that the operator has no
+      // visible toggle to turn back off.
+      for (const layer of on) {
+        const needs = LAYER_REQUIREMENTS[layer];
+        if (needs && !ctx.capabilities[needs]) {
+          return {
+            outcome: 'refuse',
+            ack: refusal(id, name, 'layer_unavailable', `${layer} needs the ${needs} capability, which this deployment has not configured`),
+            deliverAck: true,
+          };
+        }
+      }
+      return {
+        outcome: 'apply',
+        command: { verb: name, on, off },
+        ack: { v: PROTOCOL, ok: true, id, verb: name, changed: { on, off } },
+      };
+    }
+
+    case 'fly_to': {
+      // Coordinates only. The door does not geocode: resolving a place name is
+      // a 20s worst case against an external service (api/geosearch), and the
+      // consumer (313-21) already has to know where it is sending the camera.
+      const { lat, lng, zoom } = message as { lat?: unknown; lng?: unknown; zoom?: unknown };
+      const okLat = typeof lat === 'number' && Number.isFinite(lat) && Math.abs(lat) <= 90;
+      const okLng = typeof lng === 'number' && Number.isFinite(lng) && Math.abs(lng) <= 180;
+      if (!okLat || !okLng) {
+        return {
+          outcome: 'refuse',
+          ack: refusal(id, name, 'invalid_coordinates', 'fly_to takes a finite lat (-90..90) and lng (-180..180); this door does not resolve place names'),
+          deliverAck: true,
+        };
+      }
+      const okZoom = typeof zoom === 'number' && Number.isFinite(zoom) && zoom >= 0 && zoom <= 24;
+      const command: Command = okZoom ? { verb: name, lat, lng, zoom } : { verb: name, lat, lng };
+      return {
+        outcome: 'apply',
+        command,
+        ack: { v: PROTOCOL, ok: true, id, verb: name, changed: { ...(okZoom ? { lat, lng, zoom } : { lat, lng }) } },
+      };
+    }
+
+    case 'set_projection': {
+      const projection = message.projection;
+      if (projection !== 'globe' && projection !== 'mercator') {
+        return {
+          outcome: 'refuse',
+          ack: refusal(id, name, 'invalid_projection', `projection is globe or mercator, got ${String(projection)}`),
+          deliverAck: true,
+        };
+      }
+      // Both existing routes to mercator clear terrain first (page.tsx:331-332
+      // via selectFlatMap, and the `g` key at page.tsx:437-438). A door that
+      // did not would leave the map in a state no other path can produce.
+      const clearTerrain = projection === 'mercator';
+      return {
+        outcome: 'apply',
+        command: { verb: name, projection, clearTerrain },
+        ack: { v: PROTOCOL, ok: true, id, verb: name, changed: { projection, clearTerrain } },
+      };
+    }
+
+    case 'open_camera': {
+      const cameraId = message.cameraId;
+      if (typeof cameraId !== 'string' || !cameraId) {
+        return {
+          outcome: 'refuse',
+          ack: refusal(id, name, 'malformed', 'open_camera needs a cameraId string'),
+          deliverAck: true,
+        };
+      }
+      // Not-loaded-yet is not the same fact as no-such-camera, and collapsing
+      // the two would report a real camera as unknown for the first stretch of
+      // every session.
+      if (ctx.cameraIds === null) {
+        return {
+          outcome: 'refuse',
+          ack: refusal(id, name, 'camera_catalogue_not_ready', `the camera catalogue has not loaded yet, so ${cameraId} cannot be resolved; retry, or turn the cctv layer on first`),
+          deliverAck: true,
+        };
+      }
+      if (!ctx.cameraIds.has(cameraId)) {
+        return {
+          outcome: 'refuse',
+          ack: refusal(id, name, 'unknown_camera', `no such camera: ${cameraId}`),
+          deliverAck: true,
+        };
+      }
+      return {
+        outcome: 'apply',
+        command: { verb: name, cameraId },
+        ack: { v: PROTOCOL, ok: true, id, verb: name, changed: { cameraId } },
+      };
+    }
+  }
 }
 
 /**
@@ -156,17 +329,32 @@ export function planVerb(_raw: unknown, _trusted: boolean, _ctx: DoorContext): D
  * only one anybody wanted. Every other verb is cheap and stays FIFO.
  */
 export class ControlQueue {
-  constructor(_max: number = MAX_QUEUE) {
-    throw new Error('control-door: ControlQueue not implemented');
-  }
+  private items: Command[] = [];
+
+  constructor(private readonly max: number = MAX_QUEUE) {}
+
   get size(): number {
-    throw new Error('control-door: ControlQueue not implemented');
+    return this.items.length;
   }
-  push(_command: Command): boolean {
-    throw new Error('control-door: ControlQueue not implemented');
+
+  /** False when the queue is full, so the caller can refuse by name. */
+  push(command: Command): boolean {
+    if (command.verb === 'fly_to') {
+      const pending = this.items.findIndex(item => item.verb === 'fly_to');
+      if (pending >= 0) {
+        this.items[pending] = command;
+        return true;
+      }
+    }
+    if (this.items.length >= this.max) return false;
+    this.items.push(command);
+    return true;
   }
+
   drain(): Command[] {
-    throw new Error('control-door: ControlQueue not implemented');
+    const drained = this.items;
+    this.items = [];
+    return drained;
   }
 }
 
@@ -184,6 +372,66 @@ export interface DoorOptions {
  * teardown. When the door is shut this installs nothing and returns a no-op, so
  * the caller can bind it unconditionally.
  */
-export function installControlDoor(_win: Window, _opts: DoorOptions): () => void {
-  throw new Error('control-door: installControlDoor not implemented');
+export function installControlDoor(win: Window, opts: DoorOptions): () => void {
+  const search = opts.search ?? win.location?.search ?? '';
+  if (!isDoorOpen(search)) return () => { /* door shut: nothing was installed */ };
+
+  const queue = new ControlQueue();
+  let flushScheduled = false;
+  let stopped = false;
+
+  const flush = () => {
+    flushScheduled = false;
+    if (stopped) return;
+    for (const command of queue.drain()) opts.apply(command);
+  };
+
+  const reply = (event: MessageEvent, ack: Ack) => {
+    const source = event.source as { postMessage?: (data: unknown, origin: string) => void } | null;
+    // Targeted at the origin the message came from, never '*': a wildcard would
+    // hand the ack to whatever happens to be listening.
+    try { source?.postMessage?.(ack, event.origin); } catch { /* parent went away */ }
+  };
+
+  const onMessage = (event: MessageEvent) => {
+    if (stopped) return;
+
+    const trusted =
+      isOriginAllowed(event.origin, opts.allowedOrigins) &&
+      // Unembedded, window.parent === window, so anything running on this page
+      // could post with this page's own origin and pass an allowlist that
+      // happens to contain it. A verb has to come from another window.
+      event.source !== null &&
+      event.source !== win;
+
+    const decision = planVerb(event.data, trusted, opts.readContext());
+
+    if (decision.outcome === 'ignore') return;
+    if (decision.outcome === 'refuse') {
+      if (decision.deliverAck) reply(event, decision.ack);
+      return;
+    }
+
+    if (!queue.push(decision.command)) {
+      reply(event, refusal(
+        decision.ack.id,
+        decision.command.verb,
+        'queue_overflow',
+        `more than ${MAX_QUEUE} verbs are already waiting; this one was not applied`,
+      ));
+      return;
+    }
+
+    reply(event, decision.ack);
+    if (!flushScheduled) {
+      flushScheduled = true;
+      queueMicrotask(flush);
+    }
+  };
+
+  win.addEventListener('message', onMessage);
+  return () => {
+    stopped = true;
+    win.removeEventListener('message', onMessage);
+  };
 }
