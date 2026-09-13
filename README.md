@@ -252,7 +252,7 @@ Post `{ v: 1, id, verb, ... }`. Every field below is required unless marked.
 | `set_layers` | `on: string[]`, `off: string[]` (either may be omitted) | Toggles layers by id |
 | `fly_to` | `lat`, `lng`, `zoom` (optional, 0-24) | Moves the camera |
 | `set_projection` | `projection: "globe" \| "mercator"` | Switches the surface; mercator also clears the terrain layers, as every other route to it does |
-| `open_camera` | `cameraId: string` | Opens that CCTV feed and flies to it |
+| `open_camera` | `cameraId: string` | Opens that CCTV feed and flies to it at zoom 13 |
 
 `fly_to` takes **coordinates only**. The door does not geocode: resolving a
 place name is a 20-second worst case against an external service, and the
@@ -266,8 +266,10 @@ the app adds it to the door.
 
 ### The ack
 
-Every message from an allowlisted origin is answered, posted back to the sender
-and targeted at its origin, never `*`:
+Every message from an allowlisted origin that **carries a `verb` string** is
+answered, posted back to the sender and targeted at its origin, never `*`.
+Anything without a `verb` is ignored in silence, because that is what the
+third-party camera iframes and the analytics script on this page look like.
 
 ```jsonc
 // accepted
@@ -288,9 +290,12 @@ catalogue loads progressively with backoff and only once the `cctv` layer is on,
 so for the first stretch of a session a perfectly real camera is not yet known.
 Reporting that as "no such camera" would be a false answer.
 
-An ack means the verb was accepted and dispatched this tick, not that the
-picture has settled: `fly_to` starts a 2000ms animation and returns before it
-finishes.
+An ack means the verb was **accepted and queued this tick**, not that the
+picture has settled. `changed` echoes what was asked for; it is not a
+measurement of the resulting map. `fly_to` starts a 2000ms animation and the
+ack returns long before it finishes, and a `fly_to` superseded by a newer one in
+the same tick is coalesced away after its ack was already sent. If you need to
+know where the map ended up, the ack is not that evidence.
 
 ### What it will not do
 
@@ -330,7 +335,11 @@ proof list without its gaps is not a proof list.
 
 1. `GET /api/health` returns 200 on **port 3000**.
 2. `GET /` still sends `X-Frame-Options: SAMEORIGIN` and no `frame-ancestors`.
-   Unflagged traffic is byte-identical to before this change.
+   The *response headers* for unflagged traffic are byte-identical to before.
+   Two behaviours do change for everyone, flag or no flag: the layer URL writer
+   now amends the query instead of rebuilding it (so `?layers=` no longer eats
+   every other parameter), and `?control` is read as presence, so `?control=0`
+   arms the door rather than disarming it.
 3. `GET /?control=1` sends **no** `X-Frame-Options`, and
    `Content-Security-Policy: ... frame-ancestors 'self' http://localhost:3000
    http://127.0.0.1:3000`.

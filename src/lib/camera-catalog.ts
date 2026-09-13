@@ -7,8 +7,19 @@ export function mergeCameraCatalog<T extends { id: string | number }>(previous: 
   return [...merged.values()];
 }
 
-/** Recover slow regions without downloading the entire worldwide list again. */
-export function loadCameraCatalog(onBatch: (cameras: CatalogCamera[]) => void, onError: () => void) {
+/**
+ * Recover slow regions without downloading the entire worldwide list again.
+ *
+ * `onSettled` fires once, when no further batch is coming — either every region
+ * answered or the retry budget ran out. Callers that need to tell "this camera
+ * does not exist" from "its region has not arrived yet" cannot do so from the
+ * batches alone, because a partial catalogue looks exactly like a complete one.
+ */
+export function loadCameraCatalog(
+  onBatch: (cameras: CatalogCamera[]) => void,
+  onError: () => void,
+  onSettled?: () => void,
+) {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let attempts = 0;
@@ -33,6 +44,8 @@ export function loadCameraCatalog(onBatch: (cameras: CatalogCamera[]) => void, o
     // Three attempts total, with backoff. No endless retries against dead feeds.
     if (remaining.length && attempts < 3 && !controller.signal.aborted) {
       timer = setTimeout(() => void load(remaining), attempts * 15_000);
+    } else if (!controller.signal.aborted) {
+      onSettled?.();
     }
   };
   void load(['all']);

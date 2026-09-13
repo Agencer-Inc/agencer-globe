@@ -428,6 +428,9 @@ export default function Dashboard() {
      that ref (:648), so a closure would see zero cameras forever. */
   const doorState = useRef({ activeLayers, capabilities });
   doorState.current = { activeLayers, capabilities };
+  /* Set once the camera catalogue stops growing. Until then a missing id means
+     "not here yet", not "does not exist". */
+  const camerasSettled = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -438,10 +441,13 @@ export default function Dashboard() {
         return {
           knownLayerIds: Object.keys(doorState.current.activeLayers),
           capabilities: doorState.current.capabilities,
-          /* null, not an empty set: the catalogue arrives progressively and
-             only once the cctv layer is on, so "not here yet" has to stay
-             distinguishable from "no such camera". */
-          cameraIds: cameras?.length ? new Set(cameras.map(c => String(c.id))) : null,
+          /* null until the catalogue has actually SETTLED, not merely until the
+             first batch lands. It arrives region by region, so a partial list
+             looks exactly like a complete one from its contents; keying off
+             length alone would call a camera from a slow region unknown. */
+          cameraIds: camerasSettled.current && cameras
+            ? new Set(cameras.map(c => String(c.id)))
+            : null,
         };
       },
       apply: (command: ControlCommand) => {
@@ -726,7 +732,13 @@ export default function Dashboard() {
       };
       setDataVersion(value => value + 1);
       setBackendStatus('connected');
-    }, () => console.warn('[OSIRIS] Camera catalogue load failed; bounded retry scheduled'));
+    },
+    () => console.warn('[OSIRIS] Camera catalogue load failed; bounded retry scheduled'),
+    /* The remote-control door needs this to answer "no such camera" honestly.
+       A half-loaded catalogue is indistinguishable from a complete one by its
+       contents alone, so without this the door calls a camera from a region
+       that has not arrived yet unknown. */
+    () => { camerasSettled.current = true; });
   }, [activeLayers.cctv]);
 
   useEffect(() => {

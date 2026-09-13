@@ -128,11 +128,20 @@ export type Decision =
   | { outcome: 'refuse'; ack: Ack; deliverAck: boolean }
   | { outcome: 'apply'; command: Command; ack: Ack };
 
-/** True when the page URL carries the control flag. */
+/**
+ * True when the page URL carries the control flag.
+ *
+ * PRESENCE, not truthiness. This used to treat `?control=0` and `?control=false`
+ * as shut, which half-armed the system: next.config.ts matches the flag with
+ * Next's `has: [{ type: 'query' }]`, which can only test that a parameter is
+ * PRESENT. So `?control=0` opened the framing exception while leaving the
+ * listener uninstalled — the header policy and the door disagreeing about what
+ * armed means. One rule, testable the same way in both places, beats a
+ * friendlier-looking flag (Law 32: flags flipped together must fail the same
+ * way, or they half-arm).
+ */
 export function isDoorOpen(search: string): boolean {
-  const value = new URLSearchParams(search).get(CONTROL_FLAG);
-  if (value === null) return false;
-  return value !== '0' && value.toLowerCase() !== 'false';
+  return new URLSearchParams(search).has(CONTROL_FLAG);
 }
 
 /** Splits the configured allowlist; falls back to the localhost default. */
@@ -214,6 +223,17 @@ export function planVerb(raw: unknown, trusted: boolean, ctx: DoorContext): Deci
 
   switch (name) {
     case 'set_layers': {
+      // A non-array `on` used to collapse to [] and be acked ok, so a caller
+      // that sent a bare string got "changed nothing" reported as success.
+      for (const field of ['on', 'off'] as const) {
+        if (message[field] !== undefined && !Array.isArray(message[field])) {
+          return {
+            outcome: 'refuse',
+            ack: refusal(id, name, 'malformed', `${field} must be an array of layer ids, got ${typeof message[field]}`),
+            deliverAck: true,
+          };
+        }
+      }
       const on = asIdList(message.on);
       const off = asIdList(message.off);
       const unknown = badLayerId(message.on, ctx.knownLayerIds) ?? badLayerId(message.off, ctx.knownLayerIds);
@@ -260,6 +280,16 @@ export function planVerb(raw: unknown, trusted: boolean, ctx: DoorContext): Deci
         };
       }
       const okZoom = typeof zoom === 'number' && Number.isFinite(zoom) && zoom >= 0 && zoom <= 24;
+      // Absent zoom is fine and means "keep the current one". A zoom that was
+      // sent but is out of range is a caller error, and silently dropping it
+      // would ack success for a camera move that did not do what was asked.
+      if (zoom !== undefined && !okZoom) {
+        return {
+          outcome: 'refuse',
+          ack: refusal(id, name, 'invalid_coordinates', `zoom must be a finite number in 0..24, got ${String(zoom)}`),
+          deliverAck: true,
+        };
+      }
       const command: Command = okZoom ? { verb: name, lat, lng, zoom } : { verb: name, lat, lng };
       return {
         outcome: 'apply',

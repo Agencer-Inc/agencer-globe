@@ -50,6 +50,16 @@ describe('the flag arms the door', () => {
     expect(isDoorOpen('?layers=cctv&control=1')).toBe(true);
   });
 
+  it('reads the flag as presence, so it cannot disagree with the header rule', () => {
+    // next.config.ts gates the framing exception on Next's `has: [{type:
+    // 'query'}]`, which can only test presence. If the door treated ?control=0
+    // as shut, that URL would open framing while leaving the listener
+    // uninstalled — half-armed, with the two halves disagreeing.
+    for (const search of ['?control', '?control=', '?control=0', '?control=false', '?control=yes']) {
+      expect(isDoorOpen(search)).toBe(true);
+    }
+  });
+
   it('installs no listener at all when the flag is absent', async () => {
     const win = window as unknown as Window;
     const add = vi.spyOn(win, 'addEventListener');
@@ -141,6 +151,14 @@ describe('layers by id', () => {
     expect(d.ack.detail).toContain('cloudflare');
   });
 
+  it('refuses a non-array payload instead of acking success for doing nothing', () => {
+    const d = planVerb(msg({ verb: 'set_layers', on: 'flights' }), true, ctx());
+    if (d.outcome !== 'refuse') throw new Error(`expected refuse, got ${d.outcome}`);
+    if (d.ack.ok) throw new Error('unreachable');
+    expect(d.ack.refused).toBe('malformed');
+    expect(d.ack.detail).toContain('on');
+  });
+
   it('accepts known ids and acks exactly what it turned on and off', () => {
     const d = planVerb(msg({ verb: 'set_layers', on: ['flights'], off: ['cctv'] }), true, ctx());
     if (d.outcome !== 'apply') throw new Error(`expected apply, got ${d.outcome}`);
@@ -170,6 +188,18 @@ describe('fly to a coordinate', () => {
     if (d.outcome !== 'refuse') throw new Error(`expected refuse, got ${d.outcome}`);
     if (d.ack.ok) throw new Error('unreachable');
     expect(d.ack.refused).toBe('invalid_coordinates');
+  });
+
+  it('refuses a zoom that was sent but is out of range, rather than dropping it', () => {
+    // Silently omitting it would ack ok for a camera move that ignored half
+    // the request. An ABSENT zoom is still fine and means "keep the current".
+    const bad = planVerb(msg({ verb: 'fly_to', lat: 0, lng: 0, zoom: 99 }), true, ctx());
+    if (bad.outcome !== 'refuse') throw new Error(`expected refuse, got ${bad.outcome}`);
+    if (bad.ack.ok) throw new Error('unreachable');
+    expect(bad.ack.detail).toContain('zoom');
+
+    const absent = planVerb(msg({ verb: 'fly_to', lat: 0, lng: 0 }), true, ctx());
+    expect(absent.outcome).toBe('apply');
   });
 
   it('refuses coordinates off the globe', () => {
