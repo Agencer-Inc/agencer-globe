@@ -144,10 +144,39 @@ export function isDoorOpen(search: string): boolean {
   return new URLSearchParams(search).has(CONTROL_FLAG);
 }
 
-/** Splits the configured allowlist; falls back to the localhost default. */
+/**
+ * Exactly `scheme://host[:port]` and nothing else. The round-trip comparison is
+ * what does the work: anything carrying a path, a trailing slash, whitespace or
+ * a `;` fails to reproduce itself and is dropped.
+ */
+function isWellFormedOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    return `${url.protocol}//${url.host}` === value;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Splits the configured allowlist; falls back to the localhost default only
+ * when nothing was configured at all.
+ *
+ * Entries are validated because next.config.ts interpolates this list straight
+ * into a Content-Security-Policy string. An entry containing `;` would close
+ * frame-ancestors and append a directive of its own, so a typo in an env var
+ * could quietly rewrite the page's security policy.
+ *
+ * A configured-but-entirely-invalid list returns EMPTY rather than falling back
+ * to localhost. Falling back would be a quiet failure that leaves the door open
+ * to an origin the operator never named; empty fails closed and visibly, which
+ * is what an operator-armed switch owes you (Law 5).
+ */
 export function parseAllowedOrigins(raw: string | undefined): string[] {
   const listed = (raw ?? '').split(',').map(entry => entry.trim()).filter(Boolean);
-  return listed.length ? listed : [...DEFAULT_ALLOWED_ORIGINS];
+  if (!listed.length) return [...DEFAULT_ALLOWED_ORIGINS];
+  return listed.filter(isWellFormedOrigin);
 }
 
 export function isOriginAllowed(origin: string, allowed: readonly string[]): boolean {

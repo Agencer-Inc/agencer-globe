@@ -92,6 +92,25 @@ describe('the allowlist', () => {
     expect(parseAllowedOrigins(`${PARENT}, https://two.test `)).toEqual([PARENT, 'https://two.test']);
   });
 
+  it('drops entries that could inject a CSP directive', () => {
+    // next.config.ts interpolates this list into frame-ancestors. An entry
+    // carrying a `;` would close that directive and append its own, so a typo
+    // in an env var could rewrite the page's security policy.
+    expect(parseAllowedOrigins(`${PARENT}, https://evil.test; script-src *`)).toEqual([PARENT]);
+    expect(parseAllowedOrigins(`${PARENT}/some/path`)).toEqual([]);
+    expect(parseAllowedOrigins(`${PARENT}/`)).toEqual([]);
+    expect(parseAllowedOrigins('javascript:alert(1)')).toEqual([]);
+    expect(parseAllowedOrigins('not a url')).toEqual([]);
+  });
+
+  it('fails closed when everything configured is invalid, never back to localhost', () => {
+    // Falling back would leave the door open to an origin the operator never
+    // named. Empty means nothing is framed and nothing is answered, which is
+    // visible and safe (Law 5).
+    expect(parseAllowedOrigins('garbage')).toEqual([]);
+    expect(parseAllowedOrigins(undefined)).toEqual([...DEFAULT_ALLOWED_ORIGINS]);
+  });
+
   it('matches on exact origin, never on a prefix', () => {
     expect(isOriginAllowed(PARENT, [PARENT])).toBe(true);
     expect(isOriginAllowed('https://app.example.test.evil.test', [PARENT])).toBe(false);
