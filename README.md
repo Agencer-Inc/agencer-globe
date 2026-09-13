@@ -321,6 +321,58 @@ POST, a per-session registry and a single-instance constraint; shipped
 carelessly it is an unauthenticated route that lets anyone reroute every
 connected viewer's map. It is tracked separately as row 313-20b.
 
+### Proving it works
+
+Four things were checked, and two were not. Both lists are here on purpose: a
+proof list without its gaps is not a proof list.
+
+**Proven, on a live `next dev` on port 3000:**
+
+1. `GET /api/health` returns 200 on **port 3000**.
+2. `GET /` still sends `X-Frame-Options: SAMEORIGIN` and no `frame-ancestors`.
+   Unflagged traffic is byte-identical to before this change.
+3. `GET /?control=1` sends **no** `X-Frame-Options`, and
+   `Content-Security-Policy: ... frame-ancestors 'self' http://localhost:3000
+   http://127.0.0.1:3000`.
+4. The door reaches the browser on a flagged load: every refusal name in
+   `control-door.ts` is present in the client bundle served for `/?control=1`,
+   so it is neither tree-shaken nor left server-only.
+
+Reproduce 1-4:
+
+```bash
+npm run dev
+node - <<'EOF'
+const B = 'http://127.0.0.1:3000';
+for (const p of ['/', '/?control=1']) {
+  const r = await fetch(B + p);
+  console.log(p, r.headers.get('x-frame-options'),
+              (r.headers.get('content-security-policy') || '').match(/frame-ancestors[^;]*/)?.[0]);
+}
+EOF
+```
+
+The verb table itself is covered by 26 tests in `src/lib/control-door.test.ts`,
+which run under happy-dom against a real `window`, a real
+`addEventListener('message')` and a real dispatched `MessageEvent` — including
+the case where the flag is absent and no listener is installed at all.
+
+**NOT RUN, named rather than glossed:**
+
+- **The container proof.** `docker compose version` is unavailable in the
+  environment this was built in, so the app was never brought up under its own
+  compose here. The compose file is unchanged by this work and still publishes
+  `${OSIRIS_PORT:-3000}:3000`; nothing in this change touches it. Anyone with
+  Docker should run `docker compose up -d` and repeat checks 1-3 against the
+  container.
+- **A headed-browser postMessage round trip.** No browser could be launched in
+  that same environment. So the end-to-end path "real parent frame posts a verb,
+  React's binding applies it, an ack comes back" is proven at the unit level and
+  at the header level, but has **not** been watched happen in a real browser.
+  The specific link still unwitnessed is React mounting the binding. Run
+  `?control=1` in a page you frame from an allowlisted origin before trusting
+  it in front of anyone.
+
 ---
 
 ## License
