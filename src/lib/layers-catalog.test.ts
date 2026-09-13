@@ -3,6 +3,7 @@ import {
   DEFAULT_ACTIVE_LAYERS,
   LAYER_IDS,
   OSIRIS_LAYERS,
+  catalogRowProblems,
   osirisLayer,
   type CatalogRow,
 } from './layers-catalog';
@@ -20,45 +21,66 @@ import {
  * three times before reading the source.
  */
 
-/** Shared by both catalogue files: the rules a row obeys whatever its kind. */
-export function assertRowShape(row: CatalogRow, where: string) {
-  for (const field of ['id', 'words', 'source', 'cadence', 'licence'] as const) {
-    expect(row[field], `${where}: ${row.id} has an empty ${field}`).not.toBe('');
-    expect(typeof row[field], `${where}: ${row.id} has a non-string ${field}`).toBe('string');
-  }
+/**
+ * A row that breaks nothing, so each validator pin below can break exactly one
+ * rule and prove the validator catches that rule specifically. Starting from a
+ * known-good row is what makes a red here readable.
+ */
+const goodRow = (over: Partial<CatalogRow> = {}): CatalogRow => ({
+  id: 'a_layer',
+  kind: 'osiris',
+  words: 'A sentence that says what the layer is.',
+  source: 'Somebody who publishes it, named at length so the null-url rule is satisfied.',
+  cadence: 'Every so often.',
+  licence: 'Stated by the publisher.',
+  status: 'live',
+  sourceUrl: 'https://example.test/feed',
+  doorKey: 'a_layer',
+  ...over,
+});
 
-  // The whole point of the status field. "unknown" is non-empty, so a
-  // not-empty check passes on a row nobody researched; banning the word is
-  // what makes the not-empty check mean something (Law 31).
-  for (const field of ['words', 'source', 'cadence', 'licence'] as const) {
-    expect(
-      row[field].trim().toLowerCase(),
-      `${where}: ${row.id}.${field} is the word "unknown" — say what is actually true, or set status`,
-    ).not.toBe('unknown');
-  }
+describe('the validator rejects what it claims to reject', () => {
+  // Law 31: catalogRowProblems is the thing asserting every other row is
+  // correct, so it gets the same scrutiny as the rows. A validator nobody
+  // proved says no is a validator that says yes to everything.
+  it('passes a good row', () => {
+    expect(catalogRowProblems(goodRow())).toEqual([]);
+  });
 
-  // words is ONE sentence a person can read. Not a phrase list, and nothing
-  // routes on it: if it ever became a list, something would start matching
-  // against it and that is the regex-on-meaning this catalogue avoids.
-  expect(row.words, `${where}: ${row.id}.words must be one sentence ending in a full stop`)
-    .toMatch(/^[^\n]+\.$/);
-  expect(row.words, `${where}: ${row.id}.words looks like a list, not a sentence`)
-    .not.toMatch(/;|\band\/or\b|,\s*\w+\s*,\s*\w+\s*,/);
+  it('catches an empty text field, by name', () => {
+    expect(catalogRowProblems(goodRow({ licence: '' }))).toContain('licence is empty');
+    expect(catalogRowProblems(goodRow({ cadence: '   ' }))).toContain('cadence is empty');
+  });
 
-  if (row.status === 'live') {
-    expect(row.sourceUrl, `${where}: ${row.id} is live, so it needs a sourceUrl`).not.toBeNull();
-    expect(
-      () => new URL(row.sourceUrl as string),
-      `${where}: ${row.id}.sourceUrl is not a URL: ${row.sourceUrl}`,
-    ).not.toThrow();
-  } else {
-    // A null url is allowed only when the row says why in its own source field.
-    expect(
-      row.source.length,
-      `${where}: ${row.id} is ${row.status} with no url, so source must say why`,
-    ).toBeGreaterThan(12);
-  }
-}
+  it('catches the word unknown, which is the whole point of the status field', () => {
+    expect(catalogRowProblems(goodRow({ licence: 'unknown' })).join(' ')).toMatch(/licence is the word/);
+    expect(catalogRowProblems(goodRow({ cadence: 'Unknown' })).join(' ')).toMatch(/cadence is the word/);
+    // Only the bare word. A sentence that happens to contain it is fine.
+    expect(catalogRowProblems(goodRow({ licence: 'The publisher leaves it unknown to the reader.' }))).toEqual([]);
+  });
+
+  it('catches words that is not one readable sentence', () => {
+    expect(catalogRowProblems(goodRow({ words: 'No full stop' })).join(' ')).toMatch(/one line ending/);
+    expect(catalogRowProblems(goodRow({ words: 'Two\nlines.' })).join(' ')).toMatch(/one line ending/);
+    expect(catalogRowProblems(goodRow({ words: 'ships; boats; vessels.' })).join(' ')).toMatch(/reads as a list/);
+  });
+
+  it('catches a live row with no url, or a url that is not one', () => {
+    expect(catalogRowProblems(goodRow({ sourceUrl: null })).join(' ')).toMatch(/sourceUrl is required/);
+    expect(catalogRowProblems(goodRow({ sourceUrl: 'not a url' })).join(' ')).toMatch(/is not a URL/);
+  });
+
+  it('holds a catalogued row to the same url rule as a live one', () => {
+    expect(catalogRowProblems(goodRow({ status: 'catalogued', sourceUrl: null })).join(' '))
+      .toMatch(/sourceUrl is required/);
+  });
+
+  it('lets a non-live row drop its url only when it says why', () => {
+    expect(catalogRowProblems(goodRow({ status: 'dead', sourceUrl: null, source: 'None.' })).join(' '))
+      .toMatch(/source must say why/);
+    expect(catalogRowProblems(goodRow({ status: 'dead', sourceUrl: null }))).toEqual([]);
+  });
+});
 
 describe('the osiris half mirrors the door vocabulary, both ways', () => {
   it('every layer the app boots with has exactly one catalogue row', () => {
@@ -105,7 +127,10 @@ describe('the osiris half mirrors the door vocabulary, both ways', () => {
 
 describe('every osiris row says something true', () => {
   it('fills all its fields, with no filler', () => {
-    for (const row of OSIRIS_LAYERS) assertRowShape(row, 'osiris');
+    const broken = OSIRIS_LAYERS
+      .map(row => ({ id: row.id, problems: catalogRowProblems(row) }))
+      .filter(entry => entry.problems.length);
+    expect(broken, broken.map(e => `${e.id}: ${e.problems.join('; ')}`).join(' | ')).toEqual([]);
   });
 
   it('backs a live row with a real url', () => {
