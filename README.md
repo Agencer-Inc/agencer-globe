@@ -365,13 +365,13 @@ the case where the flag is absent and no listener is installed at all.
   `${OSIRIS_PORT:-3000}:3000`; nothing in this change touches it. Anyone with
   Docker should run `docker compose up -d` and repeat checks 1-3 against the
   container.
-- **A headed-browser postMessage round trip.** No browser could be launched in
-  that same environment. So the end-to-end path "real parent frame posts a verb,
-  React's binding applies it, an ack comes back" is proven at the unit level and
-  at the header level, but has **not** been watched happen in a real browser.
-  The specific link still unwitnessed is React mounting the binding. Run
-  `?control=1` in a page you frame from an allowlisted origin before trusting
-  it in front of anyone.
+- **HEADED ROUND TRIP NOT RUN in this sandbox** — open the fork inside a parent
+  page on the allowlist with `?control=1` and post one verb; the ack is the
+  witness. No browser could be launched where this was built, so the end-to-end
+  path "real parent frame posts a verb, React's binding applies it, an ack comes
+  back" is proven at the unit level and at the header level but has not been
+  watched happen in a real browser. The one link still unwitnessed is React
+  mounting the binding.
 
 ---
 

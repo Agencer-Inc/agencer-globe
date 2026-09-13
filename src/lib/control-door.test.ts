@@ -315,6 +315,30 @@ describe('end to end through a real window', () => {
     stop();
   });
 
+  it('refuses a verb the page posts at itself, even on an allowlisted origin', async () => {
+    // Unembedded, window.parent === window, so a script running on the globe
+    // could otherwise post with the page's own origin and drive the map. A verb
+    // has to come from another window.
+    const apply = vi.fn();
+    const stop = installControlDoor(window as unknown as Window, {
+      allowedOrigins: [PARENT],
+      readContext: () => ctx(),
+      apply,
+      search: '?control=1',
+    });
+
+    const event = new MessageEvent('message', {
+      data: msg({ verb: 'set_projection', projection: 'mercator' }),
+      origin: PARENT,
+    });
+    Object.defineProperty(event, 'source', { value: window });
+    window.dispatchEvent(event);
+
+    await flush();
+    expect(apply).not.toHaveBeenCalled();
+    stop();
+  });
+
   it('stops listening after teardown', async () => {
     const apply = vi.fn();
     const stop = installControlDoor(window as unknown as Window, {
@@ -323,12 +347,23 @@ describe('end to end through a real window', () => {
       apply,
       search: '?control=1',
     });
-    stop();
-
-    window.dispatchEvent(new MessageEvent('message', {
+    // Post a message that WOULD be applied by a live door — allowlisted origin
+    // and a real foreign source. Without both, this pin passes against a door
+    // that never tore anything down, which is how it read before a mutation
+    // run caught it.
+    const live = new MessageEvent('message', {
       data: msg({ verb: 'set_projection', projection: 'mercator' }),
       origin: PARENT,
-    }));
+    });
+    Object.defineProperty(live, 'source', { value: { postMessage: vi.fn() } });
+
+    window.dispatchEvent(live);
+    await flush();
+    expect(apply).toHaveBeenCalledTimes(1);
+
+    stop();
+    apply.mockClear();
+    window.dispatchEvent(live);
     await flush();
     expect(apply).not.toHaveBeenCalled();
   });
