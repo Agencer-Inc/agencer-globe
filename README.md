@@ -384,6 +384,87 @@ the case where the flag is absent and no listener is installed at all.
 
 ---
 
+## The layer catalogue
+
+Two files say what every layer on this globe is and where it comes from. They
+are the contract the canvas producer (313-21) picks layers from and the earth
+server (313-23) fetches by, so the ids are stable and the door key is carried
+verbatim wherever one exists.
+
+| File | Holds | What a green test proves |
+|---|---|---|
+| `src/lib/layers-catalog.ts` | the 34 layers the globe has | the rows are set-equal to the vocabulary the app boots from |
+| `src/lib/source-catalog.ts` | 2 power and 5 World-Monitor sources not on the globe yet | the rows are well formed and point somewhere that parses |
+
+### Why two files and not one
+
+`layers-catalog.ts` can prove itself. `page.tsx` seeds its layer state from
+`DEFAULT_ACTIVE_LAYERS` in that file, and the remote-control door validates
+`set_layers` against `Object.keys(activeLayers)`. So the catalogue's vocabulary
+IS the door's vocabulary at runtime, not a copy of it, and a both-ways pin
+fails by name the moment a layer gains a row or loses one.
+
+`source-catalog.ts` has nothing to be set-equal to. Its rows are prose about
+the outside world. Welding the two together would have put both under one green
+light, earned by the half that can prove itself and spent on the half that
+cannot.
+
+### What the rows say, and what they refuse to say
+
+Every row carries one plain sentence (`words`), a `source`, a `cadence`, a
+`licence`, a `status` and a `sourceUrl`. No field is ever the word "unknown":
+"unknown" is non-empty, so it passes a not-empty check while proving nobody
+looked. The test bans the bare word, and `status` carries the real answer:
+
+| status | means |
+|---|---|
+| `live` | wired to a named upstream, with no evidence in the code that it fails |
+| `dead` | wired into the app and provably broken: the route is missing, or nothing reads the id |
+| `render_only` | a drawing toggle with no data behind it by design |
+| `unsourced` | real data ships, hardcoded here, with no upstream |
+| `catalogued` | a real upstream is named and nothing here fetches it yet |
+
+**`status` is a reading of the code, not a health check.** No feed was called
+when these rows were written. `live` does not mean anyone watched it answer,
+and a consumer that needs real availability must measure it rather than read it
+off this field. `dead` is the one status backed by hard evidence, because a
+missing route and an unread id are both visible in the source.
+
+### What cataloguing the layers turned up
+
+Three of the 34 layers the control door accepts do not work, and nothing in the
+app said so before these rows did:
+
+- **`balloons`** and **`radiation`** are fetched every five minutes against
+  `/api/balloons` and `/api/radiation`, and neither route exists.
+- **`war_alerts`** is read by nothing at all. No component, effect or route
+  references it; its only appearances in `src/` are its own boot default and
+  its catalogue row. The door accepts it and acks a change that cannot happen.
+
+All three are also among the six layer ids with no toggle in the layer panel
+(`balloons`, `radiation`, `war_alerts`, `cables`, `sdk_air`, `sdk_naval`), so
+the door can switch on layers an operator has no visible way to switch off.
+
+Three more layers draw real data from a constant committed to this repo rather
+than from any upstream: the **ports** on the maritime layer, the **nuclear
+sites** on the infrastructure layer, and the **news channels** on the live news
+layer. None of those constants records where its contents came from.
+
+And **GDACS is fetched twice**, from the same URL, into two different layers:
+`api/gdelt/route.ts` serves it as `global_incidents` despite the route name,
+and `api/weather/route.ts` fetches it again for `weather`, deliberately
+dropping the earthquake and wildfire types because other layers carry them.
+
+### Licences are recorded, not resolved
+
+Most rows say the licence is **not recorded in this repo**, because it is not.
+That is the true statement, and it is deliberately not dressed up as one. No
+data licence is resolved on this leg, including the Global Energy Monitor terms
+that must be read before any GEM data lands. That reading is 313-24 and it has
+not happened.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.

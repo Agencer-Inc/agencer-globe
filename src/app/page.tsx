@@ -7,6 +7,7 @@ import { Layers, BarChart3, Newspaper, Search, X, Globe, MapPinned, Route, Radar
 import { type TerrainStatus } from '@/lib/map-terrain';
 import { loadCameraCatalog, mergeCameraCatalog } from '@/lib/camera-catalog';
 import { installControlDoor, parseAllowedOrigins, type Command as ControlCommand } from '@/lib/control-door';
+import { DEFAULT_ACTIVE_LAYERS } from '@/lib/layers-catalog';
 import IntelFeed from '@/components/IntelFeed';
 import MarketsPanel from '@/components/MarketsPanel';
 import ScmPanel from '@/components/ScmPanel';
@@ -289,44 +290,15 @@ export default function Dashboard() {
   const geocodeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastGeocodedPos = useRef<{ lat: number; lng: number } | null>(null);
 
-  // ── DEFAULT: Most layers OFF — fast initial load ──
-  const [activeLayers, setActiveLayers] = useState({
-    flights: false,
-    private: false,
-    jets: false,
-    military: false,
-    maritime: true,
-    satellites: false,
-    sat_comms: false,
-    sat_military: false,
-    sat_navigation: false,
-    sat_earth: false,
-    sat_science: false,
-    balloons: false,
-    cctv: true,
-    /* The live preview tiles over the camera dots — see CctvPreviews. */
-    cctv_previews: true,
-    live_news: true,
-    earthquakes: true,
-    fires: false,
-    weather: false,
-    radiation: false,
-    infrastructure: false,
-    global_incidents: true,
-    war_alerts: false,
-    day_night: true,
-    cables: true,
-    sdk_sea: true,
-    sdk_air: true,
-    sdk_naval: true,
-    terrain_3d: false,
-    terrain_elevation: false,
-    malware: false,
-    cyber_attacks: false,
-    gdelt_events: false,
-    cf_outages: false,
-    cf_attacks: false,
-  });
+  /* ── DEFAULT: Most layers OFF — fast initial load ──
+     The list moved to layers-catalog.ts so one object feeds both this state and
+     the catalogue's both-ways pin: the door validates set_layers against
+     Object.keys(activeLayers) (:414 below), so a layer added here without a
+     catalogue row fails a test by name instead of drifting quietly.
+     Spread rather than passed by reference: every setter below copies before
+     writing, and the spread means a future one that forgets cannot corrupt the
+     module const for the next mount. */
+  const [activeLayers, setActiveLayers] = useState({ ...DEFAULT_ACTIVE_LAYERS });
   // Server-side capability flags — gate layers that need credentials.
   const selectFlatMap = () => {
     setActiveLayers(prev => ({ ...prev, terrain_elevation: false, terrain_3d: false }));
