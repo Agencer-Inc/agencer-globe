@@ -8,6 +8,21 @@ written; the corrections are recorded in §0.
 
 > *The fork can already measure, draw, and extract. It cannot be asked. Build the asking.*
 
+## Status
+
+| Step | State |
+|---|---|
+| 1 Places | **built** — resolve + confirm doors, cache, geosearch carries the bbox |
+| 2 `power_plants` | **blocked** on the 313-24 licence read. Not started, deliberately. |
+| 3 Measure + draw | **built**, less `drop_pin` — it has no Point render path yet |
+| 4 Return path | **built** — `ring` scope on the query door |
+| 5 Generic paint | not started — the biggest and riskiest |
+| 6 Teach the verb | not started — different repo |
+| 7 Filter grammar | not started — and it is two rows, not one |
+
+Suite at the time of writing: **914 passing, 16 skipped, 0 failing** (799 at the
+branch point). `tsc --noEmit` silent. Lint unchanged from baseline.
+
 ---
 
 ## 0. Corrections to the source document
@@ -389,7 +404,11 @@ Each door does its own job. Neither learns the other's.
 
 ## 5. Step 4 — The return path
 
-`src/lib/earth/select.ts` — `selectEarthItems(ring, items)`.
+**Built.** `src/lib/earth/select.ts` — `selectEarthItems(ring, items)`.
+
+One change from the draft: the two-scope refusal now **names which two scopes
+were sent** rather than repeating a fixed sentence. With three scopes a caller
+that sent two needs to know which two, and the old message could not say.
 
 Deliberately **not** in `aoi.ts`. That file sweeps the browser's eleven-layer
 live store and keeps doing exactly that; the two functions answer the same
