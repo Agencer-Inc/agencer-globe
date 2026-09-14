@@ -88,12 +88,35 @@ is retired as a duplicate id.
 
 ### What changes
 
+**Built**, with three changes from the draft — recorded below the table.
+
 | File | Change |
 |---|---|
-| `src/lib/earth/place-cache.ts` | NEW. The resolved-name store. |
-| `src/app/api/earth/resolve/route.ts` | NEW. The only caller of geosearch in the earth server. |
-| `src/lib/earth/places.ts` | `resolvePlace` reads `PLACES ∪ cache`. Stays synchronous. Stays exact. |
-| `tools/promote-place.mjs` | NEW. Writes a cache row into `PLACES` as a reviewable hand row. |
+| `src/lib/earth/places.ts` | `resolvePlace` reads `PLACES ∪ cache`. Synchronous, exact, unchanged in every way that matters. Holds the cache itself. |
+| `src/lib/earth/geocode.ts` | NEW. A geosearch hit → a `PlaceCandidate`, and the point→box rules. |
+| `src/app/api/earth/resolve/route.ts` | NEW. Offers candidates. Writes nothing. |
+| `src/app/api/earth/resolve/confirm/route.ts` | NEW. Writes the one the caller chose. |
+| `src/app/api/geosearch/route.ts` | Carries the bbox both providers already send. |
+
+**What changed from the draft:**
+
+- **The cache lives in `places.ts`, not a `place-cache.ts`.** A separate module
+  would have needed `normalisePlace` and `bboxProblems` from `places.ts` while
+  `places.ts` needed the cache back — a circular import for no gain. What *did*
+  earn its own file is the derivation side (`geocode.ts`), which imports
+  `places.ts` and is imported by nothing in it.
+- **`api/geosearch` had to be extended first.** The draft assumed the bbox would
+  be available; it was not. `GeoResult` carried a point, and Photon's `extent`
+  and Nominatim's `boundingbox` were both parsed and discarded. Fanning out to
+  Photon a second time would have violated Law 19, so geosearch now carries the
+  box it already receives — additive, optional, existing consumers untouched.
+- **`confirm` refuses `hand_written` (409)** when a name is already in `PLACES`.
+  The draft let the write land harmlessly, since `resolvePlace` prefers the hand
+  table. But that is a success ack for a write that changed nothing, which is
+  the quiet lie this repo keeps refusing. It says so instead.
+- **`tools/promote-place.mjs` is not built.** Promoting a cached row to a
+  reviewed hand row is still the right escape hatch for anything demo-critical,
+  but nothing needs it until a demo depends on a resolved place. Its own row.
 
 `planQuery` is untouched. `resolvePlace` keeps its signature, keeps returning
 `PlaceLookup`, and keeps refusing by name. The only thing that changes is the
@@ -300,13 +323,33 @@ putting a number on screen should know its accuracy.
 
 ### Drawing is performing → the control door
 
-Verbs 5, 6 and 7: `draw_shape`, `clear_shapes`, `drop_pin`.
+**Built: `draw_shape` and `clear_shapes`, verbs 5 and 6, wired at both ends.**
 
 ```ts
 type ControlVerb =
   | 'set_layers' | 'fly_to' | 'set_projection' | 'open_camera'
-  | 'draw_shape' | 'clear_shapes' | 'drop_pin';
+  | 'draw_shape' | 'clear_shapes';
 ```
+
+**`drop_pin` is deferred to its own row, and is not in this work.** A pin is a
+Point; the drawn-shape renderer at `OsirisMap.tsx:2408` handles `Polygon` and
+`LineString` only, and `drawnPolygons` is typed to match. Shipping the verb
+without a Point render path would arm a sender with no receiver — the exact
+half-arming §8 forbids. It needs a branch in that effect, which is a change to
+the 2,805-line file and deserves its own review.
+
+**`clear_shapes` takes no argument.** Clearing one shape needs the door to know
+the ids the React side generates, which is a `DoorContext` field it does not
+have and a fact the verb could then report back. That is a separate row rather
+than a quiet option here, and it is why the draft's `unknown_shape` refusal was
+not built.
+
+**One refactor fell out of it.** `toDrawResult` was extracted from the draw
+reducer's private `complete()`, because a circle is *defined* by centre + rim
+but *stored* as a 64-vertex ring with its radius in `meta`. A verb that built
+its own `DrawResult` would have put a two-point "polygon" on the map. Both
+paths now go through the one function, which is the only reason a brain-drawn
+shape and a hand-drawn one are the same object downstream.
 
 `draw_shape` takes canonical GeoJSON — the same shape `draw.ts:137-139`
 produces, so a drawn shape and a brain-sent one are indistinguishable
