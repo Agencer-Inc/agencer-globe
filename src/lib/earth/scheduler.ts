@@ -19,16 +19,20 @@
  *     |
  *     no
  *     v
- *   race(fetch(), timeout(timeoutMs))   timeoutMs < intervalMs, pinned in registry
- *     |                     |
- *   settled              timed out
- *     v                     v
- *   record.fetchedAt=now  record.lastError='timed out after Nms'
- *   record.rowCount=n     (fetchedAt is NOT touched: the old data is still the
- *   record.lastError=null  newest we ever had, and its age must keep counting)
- *     |
+ *   race(fetch(signal), timeout(timeoutMs))  timeoutMs < intervalMs, pinned
+ *     |                     |                in the registry
+ *   settled              timed out --> controller.abort() CANCELS THE REQUEST.
+ *     |                     |            Racing alone would only stop this
+ *     |                     v            function waiting while the request
+ *     |               record.lastError   kept running into the next tick.
  *     v
- *   seedSource('earth:<id>', items, ttlMs)
+ *   empty, and we already hold rows?
+ *     |                        \
+ *     no                        yes --> lastRefreshEmpty = true, and
+ *     v                                 fetchedAt/rowCount are NOT touched:
+ *   record.fetchedAt=now                seedSource will not clear the old rows
+ *   record.rowCount=n                   (sourceCache.ts:122), so those rows are
+ *   seedSource('earth:<id>', ...)       what we still serve, and they are stale.
  *
  * WHY THE RECORD AND NOT THE CACHE ANSWERS "IS THIS COLD".
  * peekSource returns undefined for a zero-length entry (sourceCache.ts:105) and
@@ -61,6 +65,13 @@ export interface LayerRecord {
   rowCount: number;
   /** The most recent attempt's failure, or null if the most recent succeeded. */
   lastError: string | null;
+  /**
+   * The last refresh succeeded but returned nothing, while we still held older
+   * rows. seedSource declines to overwrite with an empty list
+   * (sourceCache.ts:122), so those older rows are what the door still serves,
+   * and it must call them stale rather than fresh.
+   */
+  lastRefreshEmpty: boolean;
   inFlight: boolean;
   /** Ticks dropped because a fetch was still running. Counted, never silent. */
   skippedTicks: number;
@@ -82,6 +93,7 @@ function blankRecord(layerId: string): LayerRecord {
     fetchedAt: null,
     rowCount: 0,
     lastError: null,
+    lastRefreshEmpty: false,
     inFlight: false,
     skippedTicks: 0,
     attempts: 0,
@@ -141,17 +153,33 @@ export async function tickLayer(layer: EarthLayer): Promise<void> {
 
   record.inFlight = true;
   record.attempts++;
+  // The signal is what makes the timeout REAL. Promise.race alone only stops
+  // this function waiting; the underlying request keeps running, and the next
+  // tick then starts a second one against the same upstream while the first is
+  // still open. That is precisely the overlap `inFlight` exists to prevent,
+  // reached by a path `inFlight` cannot see. Found by the outside voice.
+  const controller = new AbortController();
   const timeout = timeoutAfter(layer.timeoutMs, layer.id);
 
   try {
-    const items = await Promise.race([layer.fetch(), timeout.promise]);
+    const items = await Promise.race([layer.fetch(controller.signal), timeout.promise]);
     record.everFetched = true;
-    record.fetchedAt = Date.now();
-    record.rowCount = items.length;
     record.lastError = null;
-    // seedSource ignores an empty list (sourceCache.ts:122), which is why the
-    // record above carries rowCount and not the cache.
-    seedSource<EarthItem>(earthCacheKey(layer.id), items, layer.ttlMs);
+
+    const held = layerItems(layer.id);
+    if (items.length === 0 && held.length > 0) {
+      // seedSource will not overwrite with an empty list (sourceCache.ts:122),
+      // so `held` is still what the door will serve. Stamping fetchedAt and
+      // rowCount=0 here would tell two lies at once: the door would serve those
+      // older rows while calling them freshly fetched, and the report would say
+      // we hold nothing while the query returns things.
+      record.lastRefreshEmpty = true;
+    } else {
+      record.lastRefreshEmpty = false;
+      record.fetchedAt = Date.now();
+      record.rowCount = items.length;
+      seedSource<EarthItem>(earthCacheKey(layer.id), items, layer.ttlMs);
+    }
   } catch (e) {
     record.lastError = e instanceof Error ? e.message : String(e);
     // fetchedAt, rowCount and everFetched are deliberately untouched: whatever
@@ -160,6 +188,10 @@ export async function tickLayer(layer: EarthLayer): Promise<void> {
     console.warn(`[OSIRIS earth] ${layer.id} fetch failed: ${record.lastError}`);
   } finally {
     timeout.cancel();
+    // Unconditional: on the timeout path this is what actually cancels the
+    // request, and on the success path the request has already settled so it
+    // is a no-op. Either way nothing is left running once the slot is freed.
+    controller.abort();
     record.inFlight = false;
   }
 }

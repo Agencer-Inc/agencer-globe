@@ -33,8 +33,14 @@ cache entry, and calls no upstream.
 
 **Egress.** Two upstreams today, both already reached by this app before this
 leg: the USGS earthquake feed (url read from the catalogue row, never retyped)
-and this app's own `/api/flights` route over `127.0.0.1`. No new external
-destination was introduced.
+and this app's own `/api/flights` route.
+
+That second one defaults to `http://127.0.0.1:3000` and is **overridable** by
+`EARTH_SELF_ORIGIN`, so it is an operator-controlled egress destination rather
+than a hard loopback guarantee. Nothing validates the value. Unset, it is
+loopback; set, it is wherever it points. The seat should know that before
+signing the egress line, and whatever it is set to in the deployed environment
+is not something this repo can state.
 
 ---
 
@@ -49,8 +55,9 @@ and timestamps, not gauges derived after the fact.
 | `layers[].layer` | string | `scheduler.ts` LayerRecord | catalogue layer id |
 | `layers[].cold` | bool | `!everFetched` | has never completed a fetch |
 | `layers[].rowCount` | int | last completed fetch | rows held. Zero is a real warm answer |
-| `layers[].fetchedAt` | epoch ms | last completed fetch | null until one completes |
+| `layers[].fetchedAt` | epoch ms | last completed fetch | when THIS SERVER retrieved what it holds. Not when the event was observed: nothing here can see that |
 | `layers[].lastError` | string or null | last attempt | null means the last attempt succeeded |
+| `armed` | bool | `activeTimerCount() > 0` | read from the scheduler, not from the flag |
 | `layers[].attempts` | counter | per process | fetch cycles started |
 | `layers[].skippedTicks` | counter | per process | ticks dropped because a fetch was still running |
 | `unservedLiveLayers[]` | string[] | computed from the catalogue | live layers with no fetcher here |
@@ -67,6 +74,13 @@ per-fetch duration and no egress byte count. The catalogue's `status` field is
 a reading of the code and not a health check (`layers-catalog.ts:99-104`), and
 this server does not upgrade it into one. A consumer that needs real
 availability has to measure it (Law 3).
+
+**Nor is observation age.** `ageSeconds` is how long ago this server retrieved
+what it holds. An aircraft position is already some seconds old when the
+upstream hands it over, and nothing in this diff can see that gap. For push-fed
+`sdk_` layers `ageSeconds` is **null**, not zero: the entities carry their own
+timestamps from whoever pushed them and this server never polls, so zero would
+assert a measurement that was never taken.
 
 ---
 
@@ -88,10 +102,21 @@ per server process. Two facts follow:
 
 2. **The lock belongs at deploy, not in this module.** Whoever holds rig state
    takes the rule 4 lock before a replica with `NEXT_PUBLIC_EARTH_SERVER=1`
-   starts. The in-process guarantee this code does make is narrower and is
-   tested: one layer never has two fetches in flight at once, and a tick that
-   lands on a running fetch is skipped and counted
-   (`scheduler.ts` tickLayer, pinned in `scheduler.test.ts`).
+   starts. The in-process guarantee this code makes is narrower, and it is
+   stated exactly because an earlier draft of this document overclaimed it:
+
+   - A tick that lands while a fetch is running is skipped and counted in
+     `skippedTicks`. Pinned.
+   - A fetch that exceeds `timeoutMs` is **aborted**, not merely abandoned.
+     `Promise.race` on its own stops the scheduler waiting while the request
+     keeps running into the next tick, which is the overlap `inFlight` cannot
+     see. `tickLayer` passes an `AbortSignal` to every fetcher and aborts it.
+     Pinned by a fetcher that only settles when its signal fires.
+   - `fetchFlights` passes that signal to `fetch`, so the request really is
+     cancelled. `fetchEarthquakes` calls `httpJson`, which wraps `node:https`
+     and takes no signal; it is bounded instead by its own 20s timeout, which
+     is shorter than that layer's 30s, so the request cannot outlive the race
+     there either. The signal is still checked before it opens a connection.
 
 **Scoping the flag to exactly one replica is the cheap version of the lock**,
 and it is what the arming line below assumes.

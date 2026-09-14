@@ -86,7 +86,12 @@ export interface EarthAnswer {
   coldDetail: string | null;
   /** Warm but past its TTL, or warm with the last refresh having failed. */
   stale: boolean;
-  /** Age of the data actually held, in seconds. Null when cold. */
+  /**
+   * How long ago THIS SERVER retrieved what it is holding, in seconds. Null
+   * when cold, and null for push-fed sdk_ layers where nothing measured it.
+   * Not the age of the observation: an aircraft position is already some
+   * seconds old when the upstream hands it over, and nothing here can see that.
+   */
   ageSeconds: number | null;
   /** The last refresh failure, carried rather than swallowed. */
   lastError: string | null;
@@ -251,12 +256,16 @@ export function planQuery(input: EarthQueryInput, ctx: QueryContext = {}): Earth
         'Push entities to /api/sdk/ingest with that source name first.',
       );
     }
-    // Push-fed, so never cold: if the store has the provider, it is current.
+    // Push-fed, so never cold: if the store has the provider, it is there.
+    // ageSeconds is NULL and not 0. Nothing here measures when those entities
+    // were observed; each carries its own timestamp from whoever pushed it, and
+    // this server never polls. Zero would assert "measured just now" on no
+    // measurement at all. Found by the outside voice.
     return shape(
       layerId,
       {
         cold: false, coldReason: null, coldDetail: null,
-        stale: false, ageSeconds: 0, lastError: null,
+        stale: false, ageSeconds: null, lastError: null,
         items,
       },
       scope,
@@ -329,7 +338,10 @@ export function planQuery(input: EarthQueryInput, ctx: QueryContext = {}): Earth
 
   // Warm. Including warm-with-zero-rows, which is a real answer.
   const ageMs = record.fetchedAt === null ? 0 : now - record.fetchedAt;
-  const stale = record.lastError !== null || ageMs > registered.ttlMs;
+  // lastRefreshEmpty counts as stale: the rows being served survived a refresh
+  // that returned nothing, so they are older than the last successful cycle.
+  const stale =
+    record.lastError !== null || record.lastRefreshEmpty || ageMs > registered.ttlMs;
 
   return shape(
     layerId,

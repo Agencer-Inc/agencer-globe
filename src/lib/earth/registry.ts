@@ -68,7 +68,12 @@ export interface EarthLayer {
    * scheduler then has to skip forever. registryProblems() pins it.
    */
   timeoutMs: number;
-  fetch: () => Promise<EarthItem[]>;
+  /**
+   * The signal is aborted when timeoutMs elapses. A fetcher MUST pass it to
+   * whatever it calls, or the timeout only stops the scheduler waiting while
+   * the request itself keeps running and collides with the next tick.
+   */
+  fetch: (signal: AbortSignal) => Promise<EarthItem[]>;
 }
 
 /** Where this server reaches its own routes. 127.0.0.1 because localhost DNS
@@ -101,7 +106,11 @@ interface UsgsFeature {
  * owns its HTTP cache, this owns `earth:earthquakes`, and they never write to
  * each other's key).
  */
-async function fetchEarthquakes(): Promise<EarthItem[]> {
+async function fetchEarthquakes(signal: AbortSignal): Promise<EarthItem[]> {
+  // httpJson wraps node:https and takes no AbortSignal, so its own timeoutMs is
+  // what bounds this request. Checked here so an already-aborted tick does not
+  // open a connection it has no intention of reading.
+  if (signal.aborted) throw new Error('earthquakes fetch aborted before it started');
   const data = await httpJson<{ features?: UsgsFeature[] }>(rowUrl('earthquakes'), { timeoutMs: 20_000 });
   const items: EarthItem[] = [];
   for (const f of data.features ?? []) {
@@ -144,9 +153,10 @@ interface FlightRow {
  * is deliberately shorter than the route's own 90s cache, so this copy can
  * never serve something older than the route would have.
  */
-async function fetchFlights(): Promise<EarthItem[]> {
+async function fetchFlights(signal: AbortSignal): Promise<EarthItem[]> {
   const res = await fetch(`${selfOrigin()}/api/flights`, {
     headers: { Accept: 'application/json' },
+    signal,
   });
   if (!res.ok) throw new Error(`/api/flights answered ${res.status}`);
   const data = (await res.json()) as { commercial_flights?: FlightRow[] };
@@ -163,7 +173,9 @@ async function fetchFlights(): Promise<EarthItem[]> {
         altitudeM: f.alt,
         speedKnots: f.speed_knots ?? null,
         model: f.model,
-        grounded: f.grounded ?? false,
+        // null, not false. An absent field means the upstream did not say, and
+        // `false` would assert "observed airborne" on no evidence.
+        grounded: f.grounded ?? null,
       },
     });
   }

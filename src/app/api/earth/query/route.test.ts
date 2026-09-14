@@ -165,6 +165,25 @@ describe('POST /api/earth/query', () => {
     expect((await res.json()).refusal).toBe('malformed');
   });
 
+  // Found by the outside voice. `JSON.parse("null")` is valid JSON and yields
+  // null, so reading body.userId threw and the door answered 500 instead of
+  // the refusal it documents.
+  it('refuses a JSON body that is not an object, rather than crashing', async () => {
+    armWith([NOTRE_DAME]);
+    for (const body of ['null', '[]', '42', '"hi"']) {
+      const res = await POST(post(body, { [USER_HEADER]: 'op-1' }));
+      expect(res.status, `body ${body}`).toBe(400);
+      expect((await res.json()).refusal).toBe('malformed');
+    }
+  });
+
+  it('a JSON null body from an anonymous caller is still refused as anonymous', async () => {
+    armWith([NOTRE_DAME]);
+    const res = await POST(post('null'));
+    expect(res.status).toBe(401);
+    expect((await res.json()).refusal).toBe('anonymous');
+  });
+
   it('never lets an answer be cached by anything in front of it', async () => {
     const layer = armWith([NOTRE_DAME]);
     await tickLayer(layer);
@@ -187,6 +206,25 @@ describe('GET /api/earth/query reports what is held', () => {
     expect(quake.rowCount).toBe(2);
     // The report says how much it holds, never what it holds.
     expect(JSON.stringify(body)).not.toContain('nd');
+  });
+
+  // Found by the outside voice. `armed: true` was a literal emitted after the
+  // env check, so the "witness" printed its input rather than its output. A
+  // flag that is set while the scheduler never started reported armed.
+  it('reports the real scheduler state, not the flag it was handed', async () => {
+    resetEarthScheduler();   // flag is on, but nothing is running
+    const body = await (await GET()).json();
+
+    expect(body.armed).toBe(false);
+    expect(body.activeTimers).toBe(0);
+    expect(body.layers).toEqual([]);
+  });
+
+  it('reports armed once timers actually exist', async () => {
+    armWith([NOTRE_DAME]);
+    const body = await (await GET()).json();
+    expect(body.armed).toBe(true);
+    expect(body.activeTimers).toBe(1);
   });
 
   it('lists live catalogue layers this server does not serve', async () => {

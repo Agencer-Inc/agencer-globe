@@ -45,6 +45,19 @@ describe('resolvePlace', () => {
     expect(resolvePlace('CDG').ok).toBe(false);
   });
 
+  // Found by the outside voice. PLACES is an ordinary object, so every key on
+  // Object.prototype resolves through it and is TRUTHY with an undefined bbox.
+  // The caller then sees ok:true with no box and drops the geographic filter
+  // entirely. The "Marseille" pin above could never catch this: a normal miss
+  // is falsy, an inherited one is not.
+  it('refuses an inherited prototype key, which is truthy but carries no box', () => {
+    for (const key of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
+      const got = resolvePlace(key);
+      expect(got.ok, `place ${key}`).toBe(false);
+      if (!got.ok) expect(got.refusal).toBe('place_unknown');
+    }
+  });
+
   it('refuses an empty place by name', () => {
     const got = resolvePlace('   ');
     expect(got.ok).toBe(false);

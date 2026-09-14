@@ -90,7 +90,14 @@ export function resolvePlace(name: string): PlaceLookup {
     };
   }
   const key = normalisePlace(name);
-  const row = PLACES[key];
+  // Object.hasOwn, not a bare index. PLACES is an ordinary object, so every
+  // key on Object.prototype ("constructor", "__proto__", "toString") resolves
+  // through it to something TRUTHY with no bbox on it. The caller then reads
+  // ok:true with an undefined box and drops its geographic filter entirely,
+  // returning the whole layer for a query that named one city. A normal miss
+  // is falsy and an inherited one is not, which is why the "Marseille" pin
+  // could never have caught this. Found by the outside voice.
+  const row = Object.hasOwn(PLACES, key) ? PLACES[key] : undefined;
   if (!row) {
     return {
       ok: false,

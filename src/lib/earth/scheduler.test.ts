@@ -198,6 +198,45 @@ describe('the fetch record', () => {
     expect(layerItems('earthquakes')).toHaveLength(1);
   });
 
+  // Found by the outside voice, as an UNVERIFIED risk. It is real.
+  // seedSource refuses to overwrite with an empty list (sourceCache.ts:122),
+  // so after an empty refresh we STILL HOLD the older rows. Stamping fetchedAt
+  // and rowCount=0 anyway meant the door served those old rows while calling
+  // them freshly fetched, and the report said it held nothing while the query
+  // returned things.
+  it('an empty refresh that keeps older rows does not report them as freshly fetched', async () => {
+    let items = [item('a')];
+    const layer = fixture({ fetch: async () => items });
+    startEarthServer({ layers: [layer], env: ARMED, preWarm: [] });
+
+    await tickLayer(layer);
+    const firstFetchedAt = layerRecord('earthquakes')!.fetchedAt;
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    items = [];
+    await tickLayer(layer);
+
+    const record = layerRecord('earthquakes')!;
+    // The cache still holds the old row, because seedSource would not clear it.
+    expect(layerItems('earthquakes')).toHaveLength(1);
+    // So the record must describe what is actually held, not what came back.
+    expect(record.rowCount).toBe(1);
+    expect(record.fetchedAt).toBe(firstFetchedAt);
+    expect(record.lastRefreshEmpty).toBe(true);
+  });
+
+  it('an empty fetch with nothing already held is a real, fresh, empty answer', async () => {
+    const layer = fixture({ fetch: async () => [] });
+    startEarthServer({ layers: [layer], env: ARMED, preWarm: [] });
+    await tickLayer(layer);
+
+    const record = layerRecord('earthquakes')!;
+    expect(record.everFetched).toBe(true);
+    expect(record.rowCount).toBe(0);
+    expect(record.fetchedAt).not.toBeNull();
+    expect(record.lastRefreshEmpty).toBe(false);
+  });
+
   it('a first fetch that fails leaves the layer cold, with the error attached', async () => {
     const layer = fixture({ fetch: async () => { throw new Error('nope'); } });
     startEarthServer({ layers: [layer], env: ARMED, preWarm: [] });
@@ -236,6 +275,29 @@ describe('one fetch at a time, bounded in time', () => {
     expect(record.lastError).toContain('timed out after 1000ms');
     expect(record.inFlight).toBe(false);
     expect(record.everFetched).toBe(false);
+  });
+
+  // Promise.race alone stops the SCHEDULER waiting; it does not stop the
+  // REQUEST. Without the abort, a timed-out fetch keeps running, the next tick
+  // starts a second one against the same upstream, and skippedTicks counts
+  // neither of them: the overlap arrives by a path inFlight cannot see.
+  it('aborts a timed-out fetch, so it is not still running when the next tick starts', async () => {
+    let aborted = false;
+    const layer = fixture({
+      intervalMs: 60_000,
+      timeoutMs: 1_000,
+      fetch: (signal: AbortSignal) => new Promise<EarthItem[]>((_, reject) => {
+        signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
+      }),
+    });
+    startEarthServer({ layers: [layer], env: ARMED, preWarm: [] });
+
+    const ticking = tickLayer(layer);
+    await vi.advanceTimersByTimeAsync(1_001);
+    await ticking;
+
+    expect(aborted).toBe(true);
+    expect(layerRecord('earthquakes')!.inFlight).toBe(false);
   });
 
   it('a tick landing while a fetch is still out is SKIPPED and COUNTED', async () => {

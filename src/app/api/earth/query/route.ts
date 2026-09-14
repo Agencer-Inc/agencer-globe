@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { planQuery, MAX_LIMIT } from '@/lib/earth/query';
 import { earthServerEnabled, EARTH_SERVER_FLAG } from '@/lib/earth/settings';
-import { allRecords } from '@/lib/earth/scheduler';
+import { allRecords, activeTimerCount } from '@/lib/earth/scheduler';
 import { unservedLiveLayers } from '@/lib/earth/registry';
 import { sdkLayerIds } from '@/lib/earth/sdk-layers';
 
@@ -54,17 +54,43 @@ function disabled() {
 export async function POST(request: NextRequest) {
   if (!earthServerEnabled()) return disabled();
 
+  const headerUser = request.headers.get(USER_HEADER);
+
   let body: Record<string, unknown>;
   try {
-    body = await request.json();
+    const parsed = await request.json();
+    // `null`, `[]`, `42` and `"hi"` are all VALID JSON, and reading .userId off
+    // the first of them threw, so the door answered 500 instead of the refusal
+    // it documents. Found by the outside voice.
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('body is not a JSON object');
+    }
+    body = parsed as Record<string, unknown>;
   } catch {
+    // A body we cannot read is still no excuse for answering a stranger: name
+    // the caller first, exactly as the readable path does.
+    if (headerUser === null || headerUser.trim() === '') {
+      return NextResponse.json(
+        {
+          ok: false,
+          refusal: 'anonymous',
+          detail: 'This door names its caller. Send a user id; anonymous queries are refused.',
+          timestamp: new Date().toISOString(),
+        },
+        { status: 401 },
+      );
+    }
     return NextResponse.json(
-      { ok: false, refusal: 'malformed', detail: 'Body must be JSON.' },
+      {
+        ok: false,
+        refusal: 'malformed',
+        detail: 'Body must be a JSON object.',
+        timestamp: new Date().toISOString(),
+      },
       { status: 400 },
     );
   }
 
-  const headerUser = request.headers.get(USER_HEADER);
   const userId = headerUser ?? (typeof body.userId === 'string' ? body.userId : null);
 
   const outcome = planQuery(body, { userId });
@@ -90,9 +116,16 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   if (!earthServerEnabled()) return disabled();
 
+  // `armed` is READ FROM THE SCHEDULER, not from the flag this function just
+  // checked. It used to be a literal `true`, which made this witness print its
+  // input instead of its output: a server with the flag set and no scheduler
+  // running reported itself armed. Found by the outside voice.
+  const activeTimers = activeTimerCount();
+
   return NextResponse.json({
     ok: true,
-    armed: true,
+    armed: activeTimers > 0,
+    activeTimers,
     maxLimit: MAX_LIMIT,
     layers: allRecords().map(r => ({
       layer: r.layerId,

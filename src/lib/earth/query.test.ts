@@ -106,6 +106,20 @@ describe('scope', () => {
     if (!got.ok) expect(got.refusal).toBe('place_unknown');
   });
 
+  // The consequence of the places bug, at the door: an undefined bbox is
+  // falsy, so `if (scope.bbox)` skips filtering and the caller gets the WHOLE
+  // layer back while having asked for one city.
+  it('a prototype key as a place does not silently return the unfiltered layer', async () => {
+    const layer = armWith([NOTRE_DAME, MARSEILLE]);
+    await tickLayer(layer);
+
+    for (const key of ['constructor', '__proto__', 'toString']) {
+      const got = planQuery({ layer: 'earthquakes', place: key }, USER);
+      expect(got.ok, `place ${key}`).toBe(false);
+      if (!got.ok) expect(got.refusal).toBe('place_unknown');
+    }
+  });
+
   it('refuses place AND bbox together, because two scopes cannot both be the answer', () => {
     const got = planQuery({ layer: 'earthquakes', place: 'paris', bbox: PLACES.tokyo.bbox }, USER);
     expect(got.ok).toBe(false);
@@ -255,6 +269,25 @@ describe('cold, and the reason', () => {
     }
   });
 
+  it('rows kept alive through an empty refresh are served as STALE, not fresh', async () => {
+    let items = [NOTRE_DAME];
+    const layer = armWith([], { fetch: async () => items });
+    await tickLayer(layer);
+    const fetchedAt = Date.now();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    items = [];
+    await tickLayer(layer);
+
+    const got = planQuery({ layer: 'earthquakes' }, { ...USER, now: fetchedAt + 5_000 });
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.items).toHaveLength(1);   // we are still serving the old row
+      expect(got.stale).toBe(true);        // and we say so
+      expect(got.ageSeconds).toBe(5);      // with its real age, not zero
+    }
+  });
+
   it('a live layer with no fetcher here is cold for THAT reason, not never_fetched', () => {
     armWith([NOTRE_DAME]);
     const got = planQuery({ layer: 'fires' }, USER);
@@ -369,6 +402,19 @@ describe('our own trove, as sdk_ layers', () => {
       expect(got.items).toHaveLength(3);
       expect(got.cold).toBe(false);       // push-fed, never cold
       expect(got.matched).toBe(3);
+    }
+  });
+
+  // Found by the outside voice. ageSeconds: 0 asserts "measured just now",
+  // which nothing measured: the store carries each entity's own timestamp and
+  // this server never polls it. Unknown is null, not zero.
+  it('does not claim an ingested entity was measured just now', () => {
+    ingest('iris', '1', 48.85, 2.35);
+    const got = planQuery({ layer: 'sdk_iris' }, USER);
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.ageSeconds).toBeNull();
+      expect(got.cold).toBe(false);
     }
   });
 
