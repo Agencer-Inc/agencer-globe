@@ -76,8 +76,60 @@ export function normalisePlace(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+/**
+ * Places a caller resolved through api/earth/resolve and CONFIRMED.
+ *
+ * The hand table above is still the hand table: nothing writes into it, and
+ * every row in it was typed by a person reading a map. This is the second half
+ * of the same lookup, and it exists because five places is not a geography.
+ *
+ * WHY A CACHE AND NOT A GEOCODER BEHIND resolvePlace. Photon is a FUZZY index —
+ * api/geosearch says so in its own header, and that is exactly what makes it
+ * good at "sydny opera house". Wired in here it would make "Springfield"
+ * silently one of forty Springfields, which is the failure the header above
+ * refuses in writing. So the fuzzy step happens at a door the caller calls
+ * deliberately, the CALLER chooses between candidates with their context in
+ * front of it, and only the chosen one is written here. resolvePlace stays an
+ * exact lookup that never guesses and never touches the network.
+ *
+ * A Map, not an object: an inherited key like "constructor" must miss, and a
+ * Map cannot reintroduce the prototype hole the hand table was fixed for.
+ *
+ * Memory, and it dies with the server — the same swap point THE-GATE rule 2
+ * already names for sourceCache. Everything in it is re-resolvable from a
+ * public upstream in one call. Anything demo-critical belongs in PLACES as a
+ * reviewed hand row rather than here.
+ */
+const RESOLVED = new Map<string, PlaceRow>();
+
+/**
+ * Write one confirmed place. Returns the key it was stored under.
+ *
+ * Throws on a malformed box rather than storing it. A cache is read by the
+ * query door to filter a whole layer, so a bad box here is not a bad row — it
+ * is every answer about that place being wrong, quietly.
+ */
+export function rememberPlace(name: string, row: PlaceRow): string {
+  const problems = bboxProblems(row.bbox);
+  if (problems.length) {
+    throw new Error(`cannot remember "${name}": ${problems.join('; ')}`);
+  }
+  const key = normalisePlace(name);
+  RESOLVED.set(key, { bbox: row.bbox, note: row.note });
+  return key;
+}
+
+/** What has been resolved this run, sorted. */
+export function cachedPlaces(): string[] {
+  return [...RESOLVED.keys()].sort();
+}
+
+export function clearPlaceCache(): void {
+  RESOLVED.clear();
+}
+
 export type PlaceLookup =
-  | { ok: true; key: string; bbox: Bbox; note: string }
+  | { ok: true; key: string; bbox: Bbox; note: string; from: 'table' | 'resolved' }
   | { ok: false; refusal: 'place_unknown'; detail: string };
 
 /** Resolve a place name to its box, or refuse it by name. Never guesses. */
@@ -98,21 +150,28 @@ export function resolvePlace(name: string): PlaceLookup {
   // is falsy and an inherited one is not, which is why the "Marseille" pin
   // could never have caught this. Found by the outside voice.
   const row = Object.hasOwn(PLACES, key) ? PLACES[key] : undefined;
-  if (!row) {
-    return {
-      ok: false,
-      refusal: 'place_unknown',
-      detail:
-        `"${name}" is not in this server's hand-written place table. ` +
-        'Send a bbox instead, or ask for one of: ' + knownPlaces().join(', '),
-    };
-  }
-  return { ok: true, key, bbox: row.bbox, note: row.note };
+  if (row) return { ok: true, key, bbox: row.bbox, note: row.note, from: 'table' };
+
+  // The hand table FIRST, always. A row a person typed and a reviewer read
+  // outranks one a fuzzy index produced, so a confirmed upstream answer can
+  // never quietly move Paris.
+  const resolved = RESOLVED.get(key);
+  if (resolved) return { ok: true, key, bbox: resolved.bbox, note: resolved.note, from: 'resolved' };
+
+  return {
+    ok: false,
+    refusal: 'place_unknown',
+    detail:
+      `"${name}" is not a place this server knows. ` +
+      'Send a bbox instead, ask for one of: ' + knownPlaces().join(', ') +
+      ' — or resolve the name first at POST /api/earth/resolve, which offers ' +
+      'candidates with their context and writes the one you confirm.',
+  };
 }
 
 /** Every place name this server will answer to, sorted for a stable message. */
 export function knownPlaces(): string[] {
-  return Object.keys(PLACES).sort();
+  return [...new Set([...Object.keys(PLACES), ...RESOLVED.keys()])].sort();
 }
 
 /**
