@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createPool } from './fetch-pool';
 
-// SCRATCH (313-64): deliberate type error, to watch the `build` job go red by
-// name. Reverted in the next commit. next.config.ts sets
-// typescript.ignoreBuildErrors: false, so this genuinely fails `next build`.
-const RED_PROOF_313_64: number = 'this is not a number';
-
 /** A task that resolves only when told to, so concurrency is observable. */
 function gate() {
   let open!: (value?: unknown) => void;
@@ -27,9 +22,7 @@ describe('createPool', () => {
     }));
 
     await Promise.resolve();
-    // SCRATCH (313-64): deliberately wrong, to watch the `test` job go red by
-    // name. The pool limit is 4. Reverted in the next commit.
-    expect(peak).toBe(5);
+    expect(peak).toBe(4);
 
     gates.forEach(g => g.open());
     await Promise.all(tasks);
