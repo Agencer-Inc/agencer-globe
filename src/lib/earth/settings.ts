@@ -19,6 +19,17 @@
 export const EARTH_SERVER_FLAG = 'NEXT_PUBLIC_EARTH_SERVER';
 
 /**
+ * The header every earth door reads its caller from (THE-GATE rule 3).
+ *
+ * Declared here rather than in a route because there is now more than one door
+ * — query and measure — and a second door that spelled the header its own way
+ * would be a second convention for one rule (Law 15). api/earth/query/route.ts
+ * re-exports this under the name it already published, so nothing that imported
+ * it from there had to move.
+ */
+export const USER_HEADER = 'x-osiris-user';
+
+/**
  * Printed once when the scheduler arms, so an armed server is witnessable from
  * outside instead of being inferred from the flag (Law 32: a capability that
  * cannot be witnessed in its armed state is unshippable).

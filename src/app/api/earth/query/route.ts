@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { planQuery, MAX_LIMIT } from '@/lib/earth/query';
-import { earthServerEnabled, EARTH_SERVER_FLAG } from '@/lib/earth/settings';
+import { earthServerEnabled, EARTH_SERVER_FLAG, USER_HEADER } from '@/lib/earth/settings';
 import { allRecords, activeTimerCount } from '@/lib/earth/scheduler';
 import { unservedLiveLayers } from '@/lib/earth/registry';
 import { sdkLayerIds } from '@/lib/earth/sdk-layers';
@@ -35,9 +35,15 @@ import { sdkLayerIds } from '@/lib/earth/sdk-layers';
  * server from outside without asking it for data (Law 32).
  */
 
-/** The header this door reads its caller from. No prior convention existed in
- *  this app, so this leg names one rather than leaving it implicit (Law 6). */
-export const USER_HEADER = 'x-osiris-user';
+/**
+ * The header this door reads its caller from. No prior convention existed in
+ * this app, so 313-23 named one rather than leaving it implicit (Law 6).
+ *
+ * It now lives in earth/settings.ts, because the measuring door reads the same
+ * header and one rule should not have two spellings. Re-exported here under the
+ * name this route already published, so no existing importer moved.
+ */
+export { USER_HEADER };
 
 function disabled() {
   return NextResponse.json(
