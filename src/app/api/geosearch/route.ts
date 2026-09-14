@@ -33,11 +33,46 @@ export interface GeoResult {
   source: 'photon' | 'nominatim';
   /** Nominatim importance, when the hit came from there. Ranking only. */
   score?: number;
+  /**
+   * [west, south, east, north], when the provider reported one.
+   *
+   * Both upstreams send a real box for administrative features and both were
+   * read for their centre point alone. The earth server's place table stores a
+   * BOX rather than a dot — "flights over Paris" needs an area — so this is the
+   * whole reason a country or a region can be resolved there at all.
+   *
+   * Absent when the provider sent none. It is never derived here: a box this
+   * route invented would be indistinguishable from one the publisher stated,
+   * and the consumer needs to know which it got.
+   */
+  bbox?: [number, number, number, number];
+  /** Only ever 'upstream' here. Present so a consumer can tell it apart from a
+   *  box derived downstream, without inspecting the numbers. */
+  bboxSource?: 'upstream';
+}
+
+/**
+ * The Photon fields this route reads, named rather than left to a string index
+ * signature — `extent` is an array, and an index signature of strings cannot
+ * hold one without widening every other field to match.
+ */
+interface PhotonProps {
+  name?: string;
+  street?: string;
+  housenumber?: string;
+  district?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  osm_key?: string;
+  osm_value?: string;
+  /** [west, north, east, south] — Photon's own order, not GeoJSON's. */
+  extent?: number[];
 }
 
 interface PhotonFeature {
   geometry?: { coordinates?: [number, number] };
-  properties?: Record<string, string | undefined>;
+  properties?: PhotonProps;
 }
 
 interface NominatimRow {
@@ -48,6 +83,20 @@ interface NominatimRow {
   type?: string;
   name?: string;
   importance?: number;
+  /** [south, north, west, east], as strings. Nominatim's own order. */
+  boundingbox?: string[];
+}
+
+/** Four finite numbers, in range, south below north. Anything else is dropped
+ *  rather than half-read: a partly-parsed box is a wrong answer that looks
+ *  right, and the earth server would filter a whole layer through it. */
+function validBbox(box: number[]): [number, number, number, number] | undefined {
+  if (box.length !== 4 || !box.every(n => Number.isFinite(n))) return undefined;
+  const [west, south, east, north] = box;
+  if (west < -180 || west > 180 || east < -180 || east > 180) return undefined;
+  if (south < -90 || south > 90 || north < -90 || north > 90) return undefined;
+  if (south > north) return undefined;
+  return [west, south, east, north];
 }
 
 /**
@@ -90,7 +139,20 @@ export function normalizePhoton(f: PhotonFeature): GeoResult | null {
     .slice(0, 3)
     .join(', ');
 
-  return { name, context, lat, lng, kind: classifyKind(p.osm_key, p.osm_value), source: 'photon' };
+  // Photon states its extent as [west, north, east, south] — north and south
+  // the opposite way round from a GeoJSON bbox. Reordered here, at the one
+  // place that reads it, and pinned in the test against a country whose box
+  // can be checked on a map.
+  const extent = Array.isArray(p.extent)
+    ? validBbox([p.extent[0], p.extent[3], p.extent[2], p.extent[1]])
+    : undefined;
+
+  return {
+    name, context, lat, lng,
+    kind: classifyKind(p.osm_key, p.osm_value),
+    source: 'photon',
+    ...(extent ? { bbox: extent, bboxSource: 'upstream' as const } : {}),
+  };
 }
 
 export function normalizeNominatim(r: NominatimRow): GeoResult | null {
@@ -99,6 +161,13 @@ export function normalizeNominatim(r: NominatimRow): GeoResult | null {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
   const parts = (r.display_name || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+  // Nominatim states its box as [south, north, west, east], as STRINGS.
+  // Reordered and parsed here, and pinned in the test the same way Photon's is.
+  const box = Array.isArray(r.boundingbox)
+    ? validBbox([r.boundingbox[2], r.boundingbox[0], r.boundingbox[3], r.boundingbox[1]].map(Number))
+    : undefined;
+
   return {
     name: r.name || parts[0] || 'Unnamed place',
     context: parts.slice(1, 4).join(', '),
@@ -107,6 +176,7 @@ export function normalizeNominatim(r: NominatimRow): GeoResult | null {
     kind: classifyKind(r.class, r.type),
     source: 'nominatim',
     score: typeof r.importance === 'number' ? r.importance : undefined,
+    ...(box ? { bbox: box, bboxSource: 'upstream' as const } : {}),
   };
 }
 
