@@ -37,7 +37,7 @@ const DrawHud = dynamic(() => import('@/components/DrawHud'), { ssr: false });
 // The measurement helpers are pure functions — importing them directly keeps
 // them out of the lazy chunk, so a finished polygon can be measured whether or
 // not the toolbar has loaded yet.
-import { toShape, queryRing, type DrawMode, type DrawnShape, type DrawProgress, type DrawResult } from '@/lib/draw';
+import { toShape, toDrawResult, queryRing, type DrawMode, type DrawnShape, type DrawProgress, type DrawResult } from '@/lib/draw';
 import { selectInPolygon } from '@/lib/aoi';
 import { diffSweep, appendEvents, type WatchBaseline, type WatchEvent } from '@/lib/watch';
 import { STORAGE_KEY, serializeShapes, deserializeShapes, shapesToGeoJSON, downloadFile } from '@/lib/aoi-export';
@@ -446,6 +446,29 @@ export default function Dashboard() {
               setActiveLayers(prev => ({ ...prev, terrain_elevation: false, terrain_3d: false }));
             }
             setMapProjection(command.projection);
+            break;
+          case 'draw_shape': {
+            /* toDrawResult, then toShape — the same two steps handleDrawComplete
+               takes (:608). A shape sent by the brain is therefore the same
+               object a hand would have produced, so the renderer, the contents
+               sweep, the export and the tripwires need no idea which drew it.
+               The door has already validated the geometry; undefined here would
+               mean the two disagreed about the minimums, so it is dropped
+               rather than guessed at. */
+            const result = toDrawResult(command.kind, command.coords);
+            if (!result) return;
+            setDrawnPolygons(prev => {
+              const shape = toShape(result, prev, prev.length);
+              return [command.name ? { ...shape, name: command.name } : shape, ...prev];
+            });
+            break;
+          }
+          case 'clear_shapes':
+            /* Matches the toolbar's own Clear All (:1930), which also drops the
+               selection: a selected shape that no longer exists leaves the
+               panel describing something the map is not showing. */
+            setDrawnPolygons([]);
+            setSelectedPolygon(null);
             break;
           case 'open_camera': {
             const cameras = dataRef.current?.cameras as Array<{ id: string | number }> | undefined;
