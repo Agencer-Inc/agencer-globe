@@ -59,3 +59,8 @@ scanner_backend_backup.js
 
 # Saved camera catalogue
 /.cache/
+
+# Per-leg scratch: plans, reports and raw test output. Was believed to be
+# ignored already and was not, so three legs of scratch sat untracked waiting
+# for someone to run `git add -A`.
+/.leg-scratch/
