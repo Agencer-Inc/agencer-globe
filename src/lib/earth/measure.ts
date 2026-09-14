@@ -25,7 +25,7 @@
  * repeated here rather than left one file away.
  */
 
-import { haversine, bearing, compassPoint, formatDistance, type LngLat } from '@/lib/geo';
+import { haversine, bearing, compassPoint, formatDistance, lngLatProblems, type LngLat } from '@/lib/geo';
 
 /**
  * The most points one measurement may carry.
@@ -112,28 +112,10 @@ export function pathProblems(path: unknown): string[] {
 
   const problems: string[] = [];
   for (let i = 0; i < path.length; i++) {
-    const point = path[i];
-    if (!Array.isArray(point) || point.length !== 2) {
-      problems.push(`point ${i} must be a pair [lng, lat]`);
-      continue;
-    }
-    const [lng, lat] = point as [unknown, unknown];
-    if (typeof lng !== 'number' || !Number.isFinite(lng)) {
-      problems.push(`point ${i} lng is not a finite number`);
-    } else if (lng < -180 || lng > 180) {
-      problems.push(`point ${i} lng ${lng} is outside -180..180`);
-    }
-    if (typeof lat !== 'number' || !Number.isFinite(lat)) {
-      problems.push(`point ${i} lat is not a finite number`);
-    } else if (lat < -90 || lat > 90) {
-      // The commonest way to reach this is a swapped pair. Said in the message,
-      // because "lat 114.05 is outside -90..90" reads as a typo when it is
-      // almost always an axis-order bug (geo.ts:10-13).
-      problems.push(
-        `point ${i} lat ${lat} is outside -90..90; ` +
-        'points are [lng, lat] in that order, so this may be a swapped pair',
-      );
-    }
+    // geo.ts owns the per-point rules, because the control door's draw verb
+    // asks the same question and one rule with two copies is one rule that
+    // drifts. It names the point, so a forty-leg path says which leg was wrong.
+    problems.push(...lngLatProblems(path[i], `point ${i}`));
   }
   return problems;
 }

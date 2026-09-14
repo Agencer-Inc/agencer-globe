@@ -21,6 +21,46 @@ export type LngLat = [number, number];
 const toRad = (deg: number) => (deg * Math.PI) / 180;
 const toDeg = (rad: number) => (rad * 180) / Math.PI;
 
+/**
+ * The rules one [lng, lat] pair must obey before any of the maths below means
+ * anything. Problems in words, naming WHICH point, because a caller sending a
+ * forty-vertex ring needs to know which vertex it got wrong.
+ *
+ * It lives here rather than in either door because both the measuring door and
+ * the control door's draw verb ask exactly this question, and this module is
+ * the one place both of them already reach — geo.ts imports nothing, so it
+ * stays isomorphic and drags no server into a client bundle.
+ *
+ * `what` names the thing being checked ("point 2", "vertex 0") so the same
+ * function can speak in each caller's own vocabulary.
+ */
+export function lngLatProblems(point: unknown, what: string): string[] {
+  if (!Array.isArray(point) || point.length !== 2) {
+    return [`${what} must be a pair [lng, lat]`];
+  }
+  const problems: string[] = [];
+  const [lng, lat] = point as [unknown, unknown];
+
+  if (typeof lng !== 'number' || !Number.isFinite(lng)) {
+    problems.push(`${what} lng is not a finite number`);
+  } else if (lng < -180 || lng > 180) {
+    problems.push(`${what} lng ${lng} is outside -180..180`);
+  }
+
+  if (typeof lat !== 'number' || !Number.isFinite(lat)) {
+    problems.push(`${what} lat is not a finite number`);
+  } else if (lat < -90 || lat > 90) {
+    // The commonest way to reach this is a swapped pair, and saying so is the
+    // difference between a message that reads like a typo and one that names
+    // the actual bug. The axis order above is never varied for this reason.
+    problems.push(
+      `${what} lat ${lat} is outside -90..90; ` +
+      'points are [lng, lat] in that order, so this may be a swapped pair',
+    );
+  }
+  return problems;
+}
+
 /** Great-circle distance in km. */
 export function haversine(a: LngLat, b: LngLat): number {
   const [lng1, lat1] = a;
