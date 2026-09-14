@@ -1,0 +1,87 @@
+name: PR checks
+
+# The fork had no pull_request workflow at all. docker-publish.yml runs on push
+# to master, on tags and on workflow_dispatch, so a pull request reported zero
+# checks and the merge bar was whatever the author said it was (313-64).
+on:
+  pull_request:
+    branches: [master]
+
+# Same shape as docker-publish.yml's concurrency block, for the same reason: a
+# PR branch pushed three times in a minute would otherwise run three full
+# build+test pairs at once, all but the last already superseded.
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+# Neither job needs more than the checkout. No secrets, no registry, no deploy,
+# which is also why this is safe to run on pull requests from forks.
+permissions:
+  contents: read
+
+# There is deliberately no `lint` job. `npm run lint` (package.json:11, a plain
+# `eslint` with no target) cannot complete at Node's default heap:
+#
+#   npm run lint          SIGABRT (exit 134), OOM at 4058.6 MB, 52 s
+#   npm run lint -- src   SIGABRT (exit 134), OOM at 4052.5 MB, 61 s
+#
+# Measured on Node 22.22.3 against a 4144 MB default heap. That ceiling is not
+# inferred: a temporary step in the build job printed the runner's own
+# v8.getHeapStatistics().heap_size_limit and it read 4144 MB, the same number
+# (PR #4, run 34804986821, build job, since removed). Scoping the target to src
+# is not a fix, as the second run shows. One confirmed contributor: the
+# committed 492 KB minified
+# public/vendor/maplibre/6.7.0/maplibre-gl-shared.mjs is linted and on its own
+# emits 134 KB of warnings, because eslint.config.mjs:11-14 ignores only .next,
+# out, build and next-env.d.ts. Fixing that is its own row.
+#
+# Both forms measured above failed, so a lint job added before that row lands
+# would red on any pull request that reproduces either, and a red check nobody
+# can act on teaches everyone to ignore red checks. Whether some third invocation
+# survives the heap was not measured and is not claimed.
+jobs:
+  # Two jobs rather than one, and the ids and names are load-bearing: the seat
+  # reads `build` and `test` by exact name as this fork's merge bar. Collapsing
+  # them into a single job would report one check under one name and silently
+  # move that bar. The cost is one extra warm-cache `npm ci`, paid on purpose.
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Pinned to the major in Dockerfile:1 (`FROM node:22-alpine`). There is
+          # no `engines` field and no .nvmrc, so nothing enforces that these two
+          # agree. Change one, change the other.
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # `npm run build`, never `npx next build`: the `prebuild` script
+      # (package.json:8) copies the MapLibre worker files into public/vendor.
+      # Those files are committed, so skipping prebuild would still pass here
+      # and break somewhere else instead. This is also a real type gate, because
+      # next.config.ts sets typescript.ignoreBuildErrors: false.
+      - run: npm run build
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Kept in step with the build job above and with Dockerfile:1.
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # `npm test` is `vitest run` (package.json:12), called through the script
+      # that already exists rather than through npx, so the CI command and the
+      # local command cannot drift. RUN_LIVE_TESTS is deliberately never set
+      # here. The gate is not in vitest.config.ts, which only records the
+      # convention in a comment at :13; it is in the test files themselves, as
+      # `process.env.RUN_LIVE_TESTS === '1' ? it : it.skip` (11 files define it,
+      # e.g. src/app/api/cctv/ibi511.test.ts:168). Leaving the variable unset is
+      # what keeps the live cases skipped. Setting it in CI buys flake, not
+      # coverage.
+      - run: npm test
