@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { gunzipSync } from 'node:zlib';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildPayload, clearPayload, getPayload, readSnapshot, writeSnapshot } from './cctv-snapshot';
@@ -44,6 +45,25 @@ describe('camera catalogue snapshot', () => {
     await writeSnapshot({ uk: [{ id: 'a' }] });
     const path = process.env.OSIRIS_CCTV_SNAPSHOT!;
     await writeFile(path, JSON.stringify({ version: 99, builtAt: Date.now(), regions: { uk: [{ id: 'a' }] } }));
+    expect(await readSnapshot()).toBeNull();
+  });
+
+  /*
+     The 'off' sentinel is a promise that a test touches no disk at all, and it
+     used to be kept by readSnapshot alone. writeSnapshot read the same variable
+     as a PATH, so it wrote the whole camera catalogue to a file literally named
+     `off` in the repo root — on every run of api/cctv/route.test.ts. That stray
+     file was read as mess to be swept up rather than as the bug it is (the
+     day-314 black box, §5.5).
+
+     One half of a switch honouring it is worse than neither half doing so: the
+     tests looked isolated while the repo quietly dirtied itself.
+  */
+  it('writes nothing at all when snapshots are switched off', async () => {
+    process.env.OSIRIS_CCTV_SNAPSHOT = 'off';
+    await writeSnapshot({ uk: [{ id: 'a' }] });
+
+    expect(existsSync('off')).toBe(false);
     expect(await readSnapshot()).toBeNull();
   });
 
