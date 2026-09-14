@@ -269,6 +269,14 @@ export function startEarthServer(opts: StartOptions = {}): EarthServerHandle {
     started.push(layer.id);
   }
 
+  // Drop records for layers this arming did not start. stopEarthServer clears
+  // timers and deliberately keeps records, so re-arming with a smaller set
+  // would otherwise leave orphans that GET reports as live holdings for a layer
+  // nothing is fetching.
+  for (const id of [...records.keys()]) {
+    if (!started.includes(id)) records.delete(id);
+  }
+
   // The witness: an armed server says so, by name, with what it armed AND what
   // it refused to arm. A capability that cannot be witnessed while armed is
   // unshippable (Law 32), and a skip nobody can see is a skip nobody can audit.

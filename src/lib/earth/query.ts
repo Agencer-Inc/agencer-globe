@@ -60,6 +60,18 @@ export type ColdReason =
   | 'render_only'
   | 'unsourced';
 
+/**
+ * The same list at runtime, so a test can prove it still covers every non-live
+ * SourceStatus. Four of these values ARE SourceStatus values, carried across a
+ * module boundary by a cast (`row.status as ColdReason` below). A cast is a
+ * promise the compiler cannot check: add a status to layers-catalog.ts and this
+ * silently starts emitting a coldReason that is not one. The pin is what makes
+ * the cast safe, not the cast.
+ */
+export const COLD_REASONS: readonly ColdReason[] = [
+  'never_fetched', 'not_served_here', 'dead', 'catalogued', 'render_only', 'unsourced',
+];
+
 export interface EarthQueryInput {
   layer?: unknown;
   place?: unknown;

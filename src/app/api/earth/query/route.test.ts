@@ -23,6 +23,10 @@ function post(body: unknown, headers: Record<string, string> = {}) {
   });
 }
 
+function get(headers: Record<string, string> = {}) {
+  return new NextRequest('http://127.0.0.1:3000/api/earth/query', { method: 'GET', headers });
+}
+
 function armWith(items: EarthItem[]) {
   const layer: EarthLayer = {
     id: 'earthquakes',
@@ -59,7 +63,7 @@ describe('the door is dark until armed', () => {
 
   it('the reporting GET is dark too', async () => {
     vi.stubEnv(EARTH_SERVER_FLAG, '');
-    expect((await GET()).status).toBe(503);
+    expect((await GET(get({ [USER_HEADER]: 'op-1' }))).status).toBe(503);
   });
 });
 
@@ -197,7 +201,7 @@ describe('GET /api/earth/query reports what is held', () => {
     const layer = armWith([NOTRE_DAME, MARSEILLE]);
     await tickLayer(layer);
 
-    const body = await (await GET()).json();
+    const body = await (await GET(get({ [USER_HEADER]: 'op-1' }))).json();
 
     expect(body.armed).toBe(true);
     expect(body.maxLimit).toBe(50);
@@ -211,9 +215,20 @@ describe('GET /api/earth/query reports what is held', () => {
   // Found by the outside voice. `armed: true` was a literal emitted after the
   // env check, so the "witness" printed its input rather than its output. A
   // flag that is set while the scheduler never started reported armed.
+  // Rule 3 binds the door, not one verb of it. This GET reports upstream error
+  // strings and the whole layer inventory, and POST refuses an anonymous
+  // caller outright, so an unauthenticated GET told a stranger strictly more
+  // than a query would have.
+  it('refuses an anonymous caller, exactly like POST', async () => {
+    armWith([NOTRE_DAME]);
+    const res = await GET(get());
+    expect(res.status).toBe(401);
+    expect((await res.json()).refusal).toBe('anonymous');
+  });
+
   it('reports the real scheduler state, not the flag it was handed', async () => {
     resetEarthScheduler();   // flag is on, but nothing is running
-    const body = await (await GET()).json();
+    const body = await (await GET(get({ [USER_HEADER]: 'op-1' }))).json();
 
     expect(body.armed).toBe(false);
     expect(body.activeTimers).toBe(0);
@@ -222,14 +237,14 @@ describe('GET /api/earth/query reports what is held', () => {
 
   it('reports armed once timers actually exist', async () => {
     armWith([NOTRE_DAME]);
-    const body = await (await GET()).json();
+    const body = await (await GET(get({ [USER_HEADER]: 'op-1' }))).json();
     expect(body.armed).toBe(true);
     expect(body.activeTimers).toBe(1);
   });
 
   it('lists live catalogue layers this server does not serve', async () => {
     armWith([NOTRE_DAME]);
-    const body = await (await GET()).json();
+    const body = await (await GET(get({ [USER_HEADER]: 'op-1' }))).json();
     expect(body.unservedLiveLayers).toContain('fires');
     expect(body.unservedLiveLayers).not.toContain('earthquakes');
   });

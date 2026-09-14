@@ -15,14 +15,23 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
 
-  const { startEarthServer } = await import('@/lib/earth/scheduler');
-  const handle = startEarthServer();
+  // A throw in register() fails the whole server start. Dark, that cannot
+  // happen (startEarthServer returns before doing anything), but armed it
+  // would mean one optional capability takes the entire app down with it. A
+  // flagged capability degrades with a loud warning; it does not get a vote on
+  // whether the server boots (Law 32).
+  try {
+    const { startEarthServer } = await import('@/lib/earth/scheduler');
+    const handle = startEarthServer();
 
-  // Pre-warm in the background. A start-up hook that awaits two upstreams is a
-  // start-up hook that delays every first request behind them.
-  if (handle.armed) {
-    void handle.warmed.catch((e: unknown) => {
-      console.warn('[OSIRIS earth] pre-warm failed:', e);
-    });
+    // Pre-warm in the background. A start-up hook that awaits two upstreams is
+    // a start-up hook that delays every first request behind them.
+    if (handle.armed) {
+      void handle.warmed.catch((e: unknown) => {
+        console.warn('[OSIRIS earth] pre-warm failed:', e);
+      });
+    }
+  } catch (e) {
+    console.error('[OSIRIS earth] failed to arm; the rest of the app is unaffected:', e);
   }
 }

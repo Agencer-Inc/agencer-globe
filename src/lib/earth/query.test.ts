@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { planQuery, MAX_LIMIT, DEFAULT_LIMIT } from './query';
+import { planQuery, MAX_LIMIT, DEFAULT_LIMIT, COLD_REASONS } from './query';
 import { startEarthServer, resetEarthScheduler, tickLayer } from './scheduler';
 import { clearSourceCache } from '@/lib/sourceCache';
 import { EARTH_SERVER_FLAG } from './settings';
 import { earthLayer, type EarthItem, type EarthLayer } from './registry';
 import { PLACES } from './places';
-import { osirisLayer } from '@/lib/layers-catalog';
+import { osirisLayer, OSIRIS_LAYERS } from '@/lib/layers-catalog';
 
 const ARMED = { [EARTH_SERVER_FLAG]: '1' } as unknown as NodeJS.ProcessEnv;
 const USER = { userId: 'op-1' };
@@ -330,6 +330,19 @@ describe('layers that are not live are answered from the catalogue as it stands'
   it('names an unsourced layer unsourced', () => {
     const got = planQuery({ layer: 'cables' }, USER);
     if (got.ok) expect(got.coldReason).toBe('unsourced');
+  });
+
+  // query.ts carries row.status across a module boundary with a cast. A cast
+  // is a promise the compiler cannot check: add a status to layers-catalog.ts
+  // and the door starts emitting a coldReason that is not one. This is the
+  // check the cast does not do.
+  it('every non-live catalogue status is a coldReason the door can name', () => {
+    const statuses = new Set(OSIRIS_LAYERS.map(r => r.status));
+    expect(statuses.size).toBeGreaterThan(1);
+    for (const status of statuses) {
+      if (status === 'live') continue;
+      expect(COLD_REASONS, `catalogue status ${status}`).toContain(status);
+    }
   });
 
   it('refuses a layer the catalogue has never heard of', () => {

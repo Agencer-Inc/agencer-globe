@@ -111,10 +111,31 @@ export async function POST(request: NextRequest) {
   );
 }
 
-/** What this server holds right now. No data, only the shape of the holdings —
- *  so it needs no user id and leaks nothing a query would not already say. */
-export async function GET() {
+/**
+ * What this server holds right now: counts, timestamps and errors, never rows.
+ *
+ * NAMES ITS CALLER, exactly like POST. An earlier version did not, on the
+ * reasoning that it "leaks nothing a query would not already say" — which was
+ * wrong in the one way that matters: a query refuses an anonymous caller
+ * outright, so everything here was more than a query would have told them,
+ * including upstream error strings and the full layer inventory. Rule 3 binds
+ * the door, not one verb of it.
+ */
+export async function GET(request: NextRequest) {
   if (!earthServerEnabled()) return disabled();
+
+  const headerUser = request.headers.get(USER_HEADER);
+  if (headerUser === null || headerUser.trim() === '') {
+    return NextResponse.json(
+      {
+        ok: false,
+        refusal: 'anonymous',
+        detail: 'This door names its caller. Send a user id; anonymous queries are refused.',
+        timestamp: new Date().toISOString(),
+      },
+      { status: 401 },
+    );
+  }
 
   // `armed` is READ FROM THE SCHEDULER, not from the flag this function just
   // checked. It used to be a literal `true`, which made this witness print its

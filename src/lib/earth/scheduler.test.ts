@@ -127,6 +127,24 @@ describe('arming', () => {
     startEarthServer({ layers: [fixture()], env: ARMED, preWarm: [] });
     expect(activeTimerCount()).toBe(1);
   });
+
+  // stopEarthServer keeps records on purpose, so re-arming with a smaller set
+  // used to leave a record behind for a layer with no timer, which GET then
+  // reported as a live holding of something nothing was fetching.
+  it('re-arming with fewer layers drops the records it no longer fetches', () => {
+    startEarthServer({
+      layers: [fixture({ id: 'earthquakes' }), fixture({ id: 'fires' })],
+      env: ARMED,
+      preWarm: [],
+    });
+    expect(layerRecord('fires')).toBeDefined();
+
+    startEarthServer({ layers: [fixture({ id: 'earthquakes' })], env: ARMED, preWarm: [] });
+
+    expect(layerRecord('earthquakes')).toBeDefined();
+    expect(layerRecord('fires')).toBeUndefined();
+    expect(activeTimerCount()).toBe(1);
+  });
 });
 
 describe('the fetch record', () => {
