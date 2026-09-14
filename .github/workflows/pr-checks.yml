@@ -25,9 +25,11 @@ permissions:
 #   npm run lint          SIGABRT (exit 134), OOM at 4058.6 MB, 52 s
 #   npm run lint -- src   SIGABRT (exit 134), OOM at 4052.5 MB, 61 s
 #
-# Measured on Node 22.22.3 against a 4144 MB default heap, the same ceiling a
-# 16 GB ubuntu-latest runner gets. Scoping the target to src is not a fix, as
-# the second run shows. One confirmed contributor: the committed 492 KB minified
+# Measured on Node 22.22.3 against a 4144 MB default heap. That ceiling is not
+# inferred: a temporary step in the build job printed the runner's own
+# v8.getHeapStatistics().heap_size_limit on PR #4, and it read 4144 MB, the same
+# number. Scoping the target to src is not a fix, as the second run shows. One
+# confirmed contributor: the committed 492 KB minified
 # public/vendor/maplibre/6.7.0/maplibre-gl-shared.mjs is linted and on its own
 # emits 134 KB of warnings, because eslint.config.mjs:8-14 ignores only .next,
 # out, build and next-env.d.ts. Fixing that is its own row. A lint job added
@@ -51,10 +53,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # TEMPORARY (313-64, removed before this PR merges): reads the runner's
-      # real heap ceiling once, so the lint omission above rests on a measured
-      # number rather than one inferred from a developer machine.
-      - run: node -e 'console.log("runner heap limit MB", Math.round(require("v8").getHeapStatistics().heap_size_limit/1048576))'
       # `npm run build`, never `npx next build`: the `prebuild` script
       # (package.json:7) copies the MapLibre worker files into public/vendor.
       # Those files are committed, so skipping prebuild would still pass here
