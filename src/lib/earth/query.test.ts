@@ -220,10 +220,15 @@ describe('cold, and the reason', () => {
       },
     });
     await tickLayer(layer);
+    const fetchedAt = Date.now();
+
+    // The clock has to move between the good fetch and the failed one, or a
+    // mutation that stamps fetchedAt on failure cannot be seen: the frozen fake
+    // clock makes the wrong value identical to the right one (Law 31).
+    await vi.advanceTimersByTimeAsync(5_000);
     mode = 'boom';
     await tickLayer(layer);
 
-    const fetchedAt = Date.now();
     const got = planQuery({ layer: 'earthquakes' }, { ...USER, now: fetchedAt + 90_000 });
     expect(got.ok).toBe(true);
     if (got.ok) {

@@ -179,12 +179,20 @@ describe('the fetch record', () => {
     await tickLayer(layer);
     const fetchedAt = layerRecord('earthquakes')!.fetchedAt;
 
+    // The clock MUST move between the good fetch and the failed one. Without
+    // this the fake clock is frozen, Date.now() in the catch returns the same
+    // value as the success, and a mutation that stamps fetchedAt on failure is
+    // invisible. Found by mutating exactly that and watching this test stay
+    // green (Law 31: a test that cannot fail is not a test).
+    await vi.advanceTimersByTimeAsync(5_000);
+
     mode = 'boom';
     await tickLayer(layer);
 
     const record = layerRecord('earthquakes')!;
     expect(record.everFetched).toBe(true);           // still warm
     expect(record.fetchedAt).toBe(fetchedAt);        // age keeps counting from the real fetch
+    expect(record.fetchedAt).toBeLessThan(Date.now()); // and the clock really did move
     expect(record.rowCount).toBe(1);                 // we still hold it
     expect(record.lastError).toContain('upstream on fire');
     expect(layerItems('earthquakes')).toHaveLength(1);
