@@ -10,7 +10,12 @@ import { sdkLayerIds } from '@/lib/earth/sdk-layers';
  *
  *   POST /api/earth/query
  *     headers: x-osiris-user: <id>          (or body.userId; the header wins)
- *     body:    { layer, place | bbox, filter?, limit? }
+ *     body:    { layer, place | bbox | ring, filter?, limit? }
+ *
+ * `ring` is a drawn shape, as [lng, lat] vertices — the return path for a shape
+ * the control door put on the globe. It answers with rows and their provenance,
+ * where a control ack only ever says what changed. Control performs, query
+ * knows, and this is the half that knows.
  *
  * Answers from what the scheduler already holds. It never fetches on the
  * request path, so a warm layer answers in the time it takes to filter an array

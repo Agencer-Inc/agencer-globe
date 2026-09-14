@@ -65,6 +65,121 @@ describe('the door names its caller (THE-GATE rule 3)', () => {
   });
 });
 
+/**
+ * The return path. A shape drawn on the globe becomes rows the brain can reason
+ * over, through the door that already carries provenance and already says what
+ * it did not show — rather than through an ack, which only ever says what
+ * changed.
+ */
+describe('the ring scope', () => {
+  const boxRing = (b: readonly number[]) => [
+    [b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [b[0], b[1]],
+  ];
+
+  it('answers a ring with the same rows as the equivalent box', async () => {
+    const layer = armWith([NOTRE_DAME, MARSEILLE]);
+    await tickLayer(layer);
+
+    const viaBox = planQuery({ layer: 'earthquakes', bbox: PLACES.paris.bbox }, USER);
+    const viaRing = planQuery({ layer: 'earthquakes', ring: boxRing(PLACES.paris.bbox) }, USER);
+
+    expect(viaRing.ok && viaBox.ok).toBe(true);
+    if (!viaRing.ok || !viaBox.ok) return;
+    expect(viaRing.items.map(i => i.id)).toEqual(viaBox.items.map(i => i.id));
+    expect(viaRing.items.map(i => i.id)).toEqual(['nd']);
+  });
+
+  it('echoes the ring back, and leaves place and bbox null', async () => {
+    const layer = armWith([NOTRE_DAME]);
+    await tickLayer(layer);
+
+    const ring = boxRing(PLACES.paris.bbox);
+    const got = planQuery({ layer: 'earthquakes', ring }, USER);
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.ring).toEqual(ring);
+      expect(got.place).toBeNull();
+      expect(got.bbox).toBeNull();
+    }
+  });
+
+  it('carries the provenance a ring answer needs as much as any other', async () => {
+    const layer = armWith([NOTRE_DAME]);
+    await tickLayer(layer);
+
+    const got = planQuery({ layer: 'earthquakes', ring: boxRing(PLACES.paris.bbox) }, USER);
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.provenance?.licence).toBe(osirisLayer('earthquakes')!.licence);
+  });
+
+  /* The honest-door property, on the new scope too: a caller has to be able to
+     tell "50 is all there was" from "50 is all you were shown". */
+  it('still reports matched BEFORE the clamp', async () => {
+    const crowd = Array.from({ length: MAX_LIMIT + 20 }, (_, i) => at(`p${i}`, 48.853, 2.349));
+    const layer = armWith(crowd);
+    await tickLayer(layer);
+
+    const ring = boxRing(PLACES.paris.bbox);
+
+    // Unasked, the door applies DEFAULT_LIMIT and still counts everything.
+    const quiet = planQuery({ layer: 'earthquakes', ring }, USER);
+    expect(quiet.ok).toBe(true);
+    if (quiet.ok) {
+      expect(quiet.matched).toBe(MAX_LIMIT + 20);
+      expect(quiet.returned).toBe(DEFAULT_LIMIT);
+    }
+
+    // Asked for more than the ceiling, it clamps and says that it did.
+    const greedy = planQuery({ layer: 'earthquakes', ring, limit: 500 }, USER);
+    expect(greedy.ok).toBe(true);
+    if (greedy.ok) {
+      expect(greedy.matched).toBe(MAX_LIMIT + 20);
+      expect(greedy.returned).toBe(MAX_LIMIT);
+      expect(greedy.limitClamped).toBe(true);
+    }
+  });
+
+  it('applies the filter and the ring together', async () => {
+    const layer = armWith([at('nd', 48.853, 2.349, 'quake'), at('nd2', 48.854, 2.350, 'tremor')]);
+    await tickLayer(layer);
+
+    const got = planQuery(
+      { layer: 'earthquakes', ring: boxRing(PLACES.paris.bbox), filter: 'tremor' },
+      USER,
+    );
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.items.map(i => i.id)).toEqual(['nd2']);
+  });
+
+  it('refuses a malformed ring by name rather than widening to the whole layer', async () => {
+    const layer = armWith([NOTRE_DAME, MARSEILLE]);
+    await tickLayer(layer);
+
+    for (const ring of [[[0, 0], [1, 1]], 'not a ring', [[0, 0], [1, 0], [999, 0]]]) {
+      const got = planQuery({ layer: 'earthquakes', ring }, USER);
+      expect(got.ok, JSON.stringify(ring)).toBe(false);
+      if (!got.ok) expect(got.refusal).toBe('malformed');
+    }
+  });
+
+  it('refuses two scopes and NAMES which two it was given', async () => {
+    const layer = armWith([NOTRE_DAME]);
+    await tickLayer(layer);
+    const ring = boxRing(PLACES.paris.bbox);
+
+    const both = planQuery({ layer: 'earthquakes', ring, place: 'paris' }, USER);
+    expect(both.ok).toBe(false);
+    if (!both.ok) {
+      expect(both.refusal).toBe('malformed');
+      expect(both.detail).toMatch(/place/);
+      expect(both.detail).toMatch(/ring/);
+    }
+
+    expect(planQuery({ layer: 'earthquakes', ring, bbox: PLACES.paris.bbox }, USER).ok).toBe(false);
+    expect(planQuery({ layer: 'earthquakes', place: 'paris', bbox: PLACES.paris.bbox }, USER).ok).toBe(false);
+  });
+});
+
 describe('scope', () => {
   it('answers a bbox query from the cache, never by fetching', async () => {
     let calls = 0;
