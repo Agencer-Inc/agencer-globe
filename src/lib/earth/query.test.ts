@@ -180,6 +180,94 @@ describe('the ring scope', () => {
   });
 });
 
+/**
+ * The props-aware filter. The string form is untouched and its pins below still
+ * hold; this is what makes "which ones are X" askable at all.
+ */
+describe('the structured filter', () => {
+  const withProps = (id: string, kind: string, props: Record<string, unknown>): EarthItem =>
+    ({ id, lat: 48.853, lng: 2.349, label: id, kind, props });
+
+  it('filters on a prop the string form could never see', async () => {
+    const layer = armWith([
+      withProps('big', 'coal', { capacityMw: 5298 }),
+      withProps('small', 'coal', { capacityMw: 40 }),
+    ]);
+    await tickLayer(layer);
+
+    const got = planQuery(
+      { layer: 'earthquakes', filter: [{ field: 'capacityMw', op: 'gte', value: 1000 }] },
+      USER,
+    );
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.items.map(i => i.id)).toEqual(['big']);
+  });
+
+  it('ANDs clauses, and echoes back what it applied', async () => {
+    const layer = armWith([
+      withProps('big-coal', 'coal', { capacityMw: 5298 }),
+      withProps('big-gas', 'gas', { capacityMw: 3000 }),
+    ]);
+    await tickLayer(layer);
+
+    const filter = [
+      { field: 'kind', op: 'eq' as const, value: 'coal' },
+      { field: 'capacityMw', op: 'gte' as const, value: 1000 },
+    ];
+    const got = planQuery({ layer: 'earthquakes', filter }, USER);
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.items.map(i => i.id)).toEqual(['big-coal']);
+      expect(got.filter).toEqual(filter);
+    }
+  });
+
+  it('works together with a place, and still counts before the clamp', async () => {
+    const layer = armWith([
+      withProps('paris-coal', 'coal', { capacityMw: 900 }),
+      { ...withProps('marseille-coal', 'coal', { capacityMw: 900 }), lat: 43.296, lng: 5.370 },
+    ]);
+    await tickLayer(layer);
+
+    const got = planQuery(
+      { layer: 'earthquakes', place: 'paris', filter: [{ field: 'kind', op: 'eq', value: 'coal' }] },
+      USER,
+    );
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.items.map(i => i.id)).toEqual(['paris-coal']);
+      expect(got.matched).toBe(1);
+    }
+  });
+
+  it('refuses an unknown operator by name rather than matching nothing', async () => {
+    const layer = armWith([withProps('a', 'coal', {})]);
+    await tickLayer(layer);
+
+    const got = planQuery(
+      { layer: 'earthquakes', filter: [{ field: 'kind', op: 'like', value: 'coal' }] },
+      USER,
+    );
+    expect(got.ok).toBe(false);
+    if (!got.ok) {
+      expect(got.refusal).toBe('malformed');
+      expect(got.detail).toMatch(/like/);
+    }
+  });
+
+  it('still takes the old string filter, unchanged', async () => {
+    const layer = armWith([withProps('a', 'coal', {}), withProps('b', 'gas', {})]);
+    await tickLayer(layer);
+
+    const got = planQuery({ layer: 'earthquakes', filter: 'coal' }, USER);
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.items.map(i => i.id)).toEqual(['a']);
+      expect(got.filter).toBe('coal');
+    }
+  });
+});
+
 describe('scope', () => {
   it('answers a bbox query from the cache, never by fetching', async () => {
     let calls = 0;

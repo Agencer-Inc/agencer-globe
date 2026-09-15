@@ -141,6 +141,10 @@ interface FlightRow {
   airline_code?: string;
   category?: string;
   grounded?: boolean;
+  heading?: number;
+  registration?: string;
+  squawk?: string;
+  aircraft_category?: string;
 }
 
 /**
@@ -177,6 +181,31 @@ async function fetchFlights(signal: AbortSignal): Promise<EarthItem[]> {
         // null, not false. An absent field means the upstream did not say, and
         // `false` would assert "observed airborne" on no evidence.
         grounded: f.grounded ?? null,
+        // Everything else /api/flights already returns, carried so the
+        // structured filter has real fields to ask about. Each is null when
+        // absent rather than defaulted, for the reason `grounded` is.
+        heading: typeof f.heading === 'number' ? f.heading : null,
+        registration: f.registration || null,
+        squawk: f.squawk || null,
+        aircraftCategory: f.aircraft_category || null,
+        category: f.category || null,
+        airlineCode: f.airline_code || null,
+        /**
+         * THERE IS NO DESTINATION HERE, AND THERE CANNOT BE.
+         *
+         * "All inbound flights to the United States" was named as a worked
+         * example, and it is not answerable from this feed at any level of
+         * filter cleverness: ADS-B broadcasts position, altitude, track and
+         * identity, and NOT origin, destination or flight phase. Those live in
+         * flight plans and airline schedules, which is a different upstream
+         * with a different licence and its own row.
+         *
+         * `heading` is what this feed does carry, and a caller can compose a
+         * bearing window with a bbox to ask a question it can actually answer —
+         * but it must know that is a proxy and not a destination. Recorded here
+         * so the next person does not go looking for a field that never
+         * existed.
+         */
       },
     });
   }
