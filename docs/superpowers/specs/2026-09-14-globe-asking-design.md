@@ -13,15 +13,26 @@ written; the corrections are recorded in §0.
 | Step | State |
 |---|---|
 | 1 Places | **built** — resolve + confirm doors, cache, geosearch carries the bbox |
-| 2 `power_plants` | **blocked** on the 313-24 licence read. Not started, deliberately. |
+| 2 `power_plants` | **built as a PROTOTYPE, licence still unread** — see below |
 | 3 Measure + draw | **built**, less `drop_pin` — it has no Point render path yet |
 | 4 Return path | **built** — `ring` scope on the query door |
-| 5 Generic paint | not started — the biggest and riskiest |
-| 6 Teach the verb | not started — different repo |
-| 7 Filter grammar | not started — and it is two rows, not one |
+| 5 Generic paint | **built** — `power_plants` is the first layer through it |
+| 6 Teach the verb | **built** in `Agencer-Inc/agencer`, branch `feat/globe-hand-taught-313-77` |
+| 7 Filter grammar | **built** — and it was two rows, as predicted. See §8. |
 
-Suite at the time of writing: **914 passing, 16 skipped, 0 failing** (799 at the
-branch point). `tsc --noEmit` silent. Lint unchanged from baseline.
+### The one thing that is deliberately not true yet
+
+**`power_plants` ships with its licence UNREAD, at the operator's explicit
+direction, to see the shape of the thing working first.** The licence field is
+carried verbatim from the source-catalogue row and still reads `NOT READ`.
+Because the query door reads licence verbatim onto every answer, every consumer
+is told so in the answer itself, and the route repeats it for anyone reading it
+directly. Nothing about this layer should leave the prototype until 313-24 reads
+the publisher's terms and replaces that sentence with what they actually say.
+
+Suite at the time of writing: **984 passing, 16 skipped, 0 failing** (799 at the
+branch point). `tsc --noEmit` silent, `npm run build` exits 0. Lint on the two
+large files is unchanged from baseline.
 
 ---
 
@@ -509,17 +520,22 @@ A field an item lacks simply does not match, and is not an error: absence is a
 normal fact about a heterogeneous feed, and refusing on it would make one odd
 row break a whole query.
 
-### The prerequisite the black box missed
+### The prerequisite the black box missed — now measured
 
-"All inbound flights to the United States" needs `destination` and `phase` in
-props. `fetchFlights` (`registry.ts:156`) carries `altitudeM`, `speedKnots`,
-`model` and `grounded` — and whether `/api/flights` exposes a destination at all
-has not been checked.
+**It was two rows, and the second one is not buildable from this feed.**
+`/api/flights` was read: it returns `heading`, `squawk`, `registration`,
+`aircraft_category`, `category` and `airline_code`, and **no destination and no
+flight phase**. That is not an omission in the route — ADS-B broadcasts
+position, altitude, track and identity, and nothing else. Origin, destination
+and phase live in flight plans and airline schedules: a different upstream, a
+different licence, its own row.
 
-**So this is two rows, not one:** a grammar row, and a data row whose
-feasibility is unknown until that route is read. The grammar row ships on its
-own and is useful on its own; the inbound-flights demo is not promised until the
-data row is answered.
+So "all inbound flights to the United States" is not answerable at any level of
+filter cleverness, and `registry.ts` now says so at the point where somebody
+would go looking for the field. `fetchFlights` carries everything the route
+really does return, so a caller can compose a bearing window with a bbox and ask
+something the data can actually answer — knowing it is a proxy and not a
+destination.
 
 ---
 
