@@ -106,6 +106,26 @@ describe('the real registry', () => {
     for (const id of PRE_WARM) expect(earthLayer(id)).toBeDefined();
   });
 
+  /**
+   * The scheduler arms a layer with setInterval and nothing else, so a layer
+   * outside PRE_WARM first fetches one FULL INTERVAL after arming. Any layer
+   * whose cadence is longer than a working session would therefore answer
+   * never_fetched for the whole of that session — truthfully, about a layer
+   * that is in practice permanently cold. Pre-warming is the only way such a
+   * layer ever becomes warm, so it is a requirement and not a nicety.
+   */
+  it('pre-warms every layer whose interval is longer than a working day could wait', () => {
+    const SESSION_MS = 4 * 60 * 60_000;
+    const slowAndCold = EARTH_LAYERS
+      .filter(l => l.intervalMs > SESSION_MS && !PRE_WARM.includes(l.id))
+      .map(l => l.id);
+
+    expect(
+      slowAndCold,
+      `these would answer never_fetched for a whole session: ${slowAndCold.join(', ')}`,
+    ).toEqual([]);
+  });
+
   it('reaches its own routes by IP, because localhost DNS is unreliable on the rig', () => {
     expect(selfOrigin({} as NodeJS.ProcessEnv)).toBe('http://127.0.0.1:3000');
     expect(selfOrigin({ EARTH_SELF_ORIGIN: 'http://example.test' } as unknown as NodeJS.ProcessEnv))

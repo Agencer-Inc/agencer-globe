@@ -315,8 +315,19 @@ export const EARTH_LAYERS: readonly EarthLayer[] = [
  * layer was already warm when the question arrived. `earthquakes` warms with
  * it so the ride can show a second layer answering from cache rather than one
  * layer that might be a fluke.
+ *
+ * `power_plants` IS HERE OUT OF NECESSITY, NOT TO MAKE A DEMO FASTER, and the
+ * difference matters. The scheduler arms a layer with
+ * `setInterval(tick, intervalMs)` and nothing else, so a layer outside this set
+ * first fetches ONE FULL INTERVAL after arming. This one's interval is a DAY,
+ * which means it would answer `never_fetched` for twenty-four hours and no
+ * session short of that could ever see it warm — the query door would be
+ * telling the truth about a layer that was, in practice, permanently cold.
+ *
+ * A layer whose cadence is longer than a working session has no other way to
+ * become warm. The cost is one ~12MB read at arming, cached for a day.
  */
-export const PRE_WARM: readonly string[] = ['flights', 'earthquakes'];
+export const PRE_WARM: readonly string[] = ['flights', 'earthquakes', 'power_plants'];
 
 const BY_ID: ReadonlyMap<string, EarthLayer> = new Map(EARTH_LAYERS.map(l => [l.id, l]));
 
