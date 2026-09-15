@@ -40,9 +40,19 @@ describe('every source row is well formed', () => {
 });
 
 describe('the rows row 313-22 asked for are actually here', () => {
-  it('carries both power layers', () => {
+  /* 313-22 asked for two power rows and both were written. power_plants has
+     since GRADUATED to layers-catalog.ts, because something fetches it now and
+     a row only waits here while nothing does. Deleted on purpose rather than by
+     accident, which is what this comment is for: a copy left behind would give
+     one id two licence statements, free to drift apart. Its licence is still
+     unread, and the graduated row still says so verbatim. */
+  it('carries the power layer that is still waiting for a fetcher', () => {
     const power = SOURCE_ROWS.filter(row => row.kind === 'power').map(row => row.id);
-    expect(power).toEqual(['power_plants', 'power_lines']);
+    expect(power).toEqual(['power_lines']);
+  });
+
+  it('no longer holds power_plants, which the osiris catalogue now owns', () => {
+    expect(sourceRow('power_plants')).toBeUndefined();
   });
 
   it('carries the first five World-Monitor sources', () => {

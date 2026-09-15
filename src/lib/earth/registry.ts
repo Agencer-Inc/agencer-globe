@@ -31,6 +31,7 @@
 
 import { osirisLayer, OSIRIS_LAYERS } from '@/lib/layers-catalog';
 import { httpJson } from '@/lib/httpJson';
+import { parseCsv, csvColumns } from '@/lib/csv';
 
 /**
  * One thing on the earth, flattened to what a bounded query needs.
@@ -183,6 +184,88 @@ async function fetchFlights(signal: AbortSignal): Promise<EarthItem[]> {
 }
 
 /**
+ * Power stations, from the CSV the catalogue row names.
+ *
+ * THE LICENCE FOR THIS DATA HAS NOT BEEN READ. The catalogue row says so in its
+ * own licence field, and the query door carries that sentence verbatim onto
+ * every answer, so nobody consuming this layer can miss it. Reading the terms is
+ * 313-24 and it has not happened; this fetcher exists so the shape of the thing
+ * can be seen working first.
+ *
+ * A RELEASE, NOT A FEED. The published database is a versioned file of ~35,000
+ * rows and about 12MB. It is read once a day — far more often than it changes —
+ * because a long interval satisfies every rule registryProblems already
+ * enforces, where a `static` layer kind would have earned a second code path
+ * through the scheduler for exactly one row.
+ *
+ * Parsed with lib/csv.ts rather than a split on commas: owner names in this
+ * dataset contain commas, and a naive split shifts latitude out of the
+ * longitude column and puts the plant somewhere plausible and wrong.
+ */
+async function fetchPowerPlants(signal: AbortSignal): Promise<EarthItem[]> {
+  const res = await fetch(rowUrl('power_plants'), { headers: { Accept: 'text/csv' }, signal });
+  if (!res.ok) throw new Error(`power plant database answered ${res.status}`);
+
+  const rows = parseCsv(await res.text());
+  if (rows.length < 2) throw new Error('power plant database returned no rows');
+
+  // By NAME, never by position: column order is not part of the publisher's
+  // promise, and reading latitude from a fixed index works right up until a
+  // column is inserted before it, at which point every plant moves silently.
+  const at = csvColumns(rows[0]);
+  const { latitude, longitude, name, gppd_idnr: id, primary_fuel: fuel } = at;
+  if (latitude === undefined || longitude === undefined || id === undefined) {
+    throw new Error(
+      'power plant database is missing a column this fetcher needs ' +
+      `(latitude, longitude, gppd_idnr); it has: ${rows[0].join(', ')}`,
+    );
+  }
+
+  /**
+   * An EMPTY cell is not a zero.
+   *
+   * `Number('')` is 0 and 0 is finite, so a plain Number() on a blank latitude
+   * passes every check and puts the station at [0, 0] — a real place in the
+   * Gulf of Guinea. The pin for this caught it on the way in.
+   */
+  const num = (value: string | undefined): number =>
+    value === undefined || value.trim() === '' ? NaN : Number(value);
+
+  const items: EarthItem[] = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const lat = num(row[latitude]);
+    const lng = num(row[longitude]);
+    // A row without a real position is skipped, not defaulted.
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
+    const capacity = at.capacity_mw === undefined ? NaN : num(row[at.capacity_mw]);
+
+    items.push({
+      id: row[id] || `${lat},${lng}`,
+      lat,
+      lng,
+      label: (name === undefined ? '' : row[name]) || 'Unnamed station',
+      // The sub-kind `filter` matches on, so "show me the coal plants in Poland"
+      // is a filter this door can already answer.
+      kind: ((fuel === undefined ? '' : row[fuel]) || 'unknown').toLowerCase(),
+      props: {
+        capacityMw: Number.isFinite(capacity) ? capacity : null,
+        country: at.country_long === undefined ? null : row[at.country_long] || null,
+        fuel: fuel === undefined ? null : row[fuel] || null,
+        owner: at.owner === undefined ? null : row[at.owner] || null,
+        // null, not a guess: an absent commissioning year means the publisher
+        // did not say, and 0 would assert a year nobody recorded.
+        commissioningYear: at.commissioning_year === undefined
+          ? null
+          : num(row[at.commissioning_year]) || null,
+      },
+    });
+  }
+  return items;
+}
+
+/**
  * The layers this server fetches. Everything else in the catalogue is answered
  * honestly as not served here rather than pretended at.
  *
@@ -207,6 +290,20 @@ export const EARTH_LAYERS: readonly EarthLayer[] = [
     ttlMs: 20 * 60_000,
     timeoutMs: 30_000,
     fetch: fetchEarthquakes,
+  },
+  {
+    id: 'power_plants',
+    // Row cadence: "The published database is a versioned release, not a feed.
+    // This server re-reads it once a day, which is far more often than it
+    // changes." A day is the honest number: the data moves on a release
+    // schedule measured in months.
+    intervalMs: 24 * 60 * 60_000,
+    ttlMs: 24 * 60 * 60_000,
+    // Generous against 12MB over a public CDN, and still four orders of
+    // magnitude under the interval, so a slow read can never collide with the
+    // next tick.
+    timeoutMs: 120_000,
+    fetch: fetchPowerPlants,
   },
 ];
 

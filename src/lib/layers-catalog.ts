@@ -70,6 +70,10 @@ export const DEFAULT_ACTIVE_LAYERS = {
   weather: false,
   radiation: false,
   infrastructure: false,
+  /* Graduated from source-catalog.ts, which is where a source waits until
+     something fetches it. Off by default: it is a 12MB once-a-day dataset and
+     nothing about the first paint needs it. */
+  power_plants: false,
   global_incidents: true,
   war_alerts: false,
   day_night: true,
@@ -370,6 +374,37 @@ export const OSIRIS_LAYERS: readonly OsirisRow[] = [
     cadence: 'Read once when the layer opens. The list only changes when someone edits the file.',
     licence: 'No dataset licence to record, because there is no dataset. The per-row Wikipedia links carry Wikipedia terms.',
     sourceUrl: null,
+  },
+  {
+    /**
+     * PROTOTYPE ROW. THE LICENCE HAS NOT BEEN READ.
+     *
+     * The licence text below is carried VERBATIM from the row this graduated
+     * from (source-catalog.ts), unchanged, and it still says NOT READ — because
+     * it still has not been. This row is live so the fetcher can run and the
+     * thing can be seen working; that is a prototyping decision taken
+     * deliberately and recorded here rather than laundered into a green field.
+     *
+     * The query door reads licence verbatim onto every answer (query.ts:31-33),
+     * so every consumer of this layer is told, in the answer itself, that the
+     * terms are unread. Nothing about this row should ship to anyone outside
+     * this prototype until 313-24 reads the publisher's terms and replaces the
+     * sentence below with what they actually say.
+     *
+     * WHAT IS ACTUALLY FETCHED. The WRI Global Power Plant Database, which the
+     * original row already named as the fallback. GEM publishes its integrated
+     * tracker as a spreadsheet release rather than anything a fetcher can pull,
+     * so it is not reachable on a cadence at all; source and sourceUrl name the
+     * dataset really being read, because those two fields are also carried
+     * verbatim onto answers and a row naming GEM while serving WRI would
+     * misattribute every plant on the map.
+     */
+    id: 'power_plants', kind: 'osiris', doorKey: 'power_plants', status: 'live',
+    words: 'Electricity generating stations worldwide, with their fuel type and capacity.',
+    source: 'The World Resources Institute Global Power Plant Database, read as the published CSV. This is the fallback the 313-22 row already named. The Global Energy Monitor integrated power tracker remains the preferred upstream, but it publishes spreadsheet releases rather than a fetchable feed.',
+    cadence: 'The published database is a versioned release, not a feed. This server re-reads it once a day, which is far more often than it changes.',
+    licence: 'NOT READ. GEM states its terms on its own site and they must be read before any of this data lands; that is row 313-24 and it has not happened. The WRI fallback is published separately with its own terms, also unread here.',
+    sourceUrl: 'https://raw.githubusercontent.com/wri/global-power-plant-database/master/output_database/global_power_plant_database.csv',
   },
   {
     id: 'global_incidents', kind: 'osiris', doorKey: 'global_incidents', status: 'live',

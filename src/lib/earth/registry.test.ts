@@ -1,9 +1,98 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   EARTH_LAYERS, PRE_WARM, earthLayer, registryProblems, unservedLiveLayers, selfOrigin,
   type EarthLayer,
 } from './registry';
 import { osirisLayer, OSIRIS_LAYERS } from '@/lib/layers-catalog';
+
+afterEach(() => vi.unstubAllGlobals());
+
+/**
+ * The power plant fetcher, driven through its real registry row so the test
+ * exercises the wiring and not a copy of it.
+ *
+ * NOTE FOR ANYONE READING THIS LAYER'S DATA: its licence has not been read.
+ * The catalogue row says so in its own licence field and the query door carries
+ * that sentence onto every answer. This pins the SHAPE of what the fetcher
+ * produces, and says nothing about whether the data may be used.
+ */
+describe('the power plant fetcher', () => {
+  const HEADER = 'country,country_long,name,gppd_idnr,capacity_mw,latitude,longitude,primary_fuel,commissioning_year,owner';
+
+  const respondWith = (csv: string, ok = true) =>
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok, status: ok ? 200 : 503, text: async () => csv })));
+
+  const run = () => earthLayer('power_plants')!.fetch(new AbortController().signal);
+
+  it('maps a row to an item, carrying fuel as the kind a filter matches on', async () => {
+    respondWith(`${HEADER}\nPOL,Poland,Belchatow,WRI1000001,5298,51.266,19.33,Coal,1988,PGE`);
+    const [plant] = await run();
+
+    expect(plant.id).toBe('WRI1000001');
+    expect(plant.lat).toBe(51.266);
+    expect(plant.lng).toBe(19.33);
+    expect(plant.label).toBe('Belchatow');
+    expect(plant.kind).toBe('coal');
+    expect(plant.props).toMatchObject({ capacityMw: 5298, country: 'Poland', owner: 'PGE' });
+  });
+
+  /* The reason this fetcher parses CSV properly instead of splitting on commas.
+     A quoted owner containing a comma shifts every later column left, and
+     latitude gets read out of the longitude field: the plant lands somewhere
+     plausible and entirely wrong, and nothing fails. */
+  it('reads a row whose owner name contains a comma', async () => {
+    respondWith(`${HEADER}\nUSA,United States,Acme Plant,WRI999,100,40.5,-74.2,Gas,2001,"Acme Power, Inc."`);
+    const [plant] = await run();
+
+    expect(plant.lat).toBe(40.5);
+    expect(plant.lng).toBe(-74.2);
+    expect(plant.props.owner).toBe('Acme Power, Inc.');
+  });
+
+  it('finds its columns by name, so an inserted column moves nothing', async () => {
+    const shuffled = 'gppd_idnr,longitude,latitude,name,primary_fuel,inserted_column';
+    respondWith(`${shuffled}\nWRI7,19.33,51.266,Belchatow,Coal,junk`);
+    const [plant] = await run();
+
+    expect(plant.lat).toBe(51.266);
+    expect(plant.lng).toBe(19.33);
+  });
+
+  /* [0,0] is a real place in the Gulf of Guinea, and a defaulted row would put
+     a power station in it — a wrong answer that looks right. */
+  it('skips a row with no usable position rather than defaulting it to nowhere', async () => {
+    respondWith(`${HEADER}\nX,X,Ghost,WRI1,,,,Coal,,\nPOL,Poland,Real,WRI2,10,51.2,19.3,Coal,,`);
+    const items = await run();
+
+    expect(items.map(i => i.id)).toEqual(['WRI2']);
+  });
+
+  it('says which column it needed when the publisher changes the file', async () => {
+    respondWith('country,name\nPOL,Belchatow');
+    await expect(run()).rejects.toThrow(/latitude|longitude|gppd_idnr/);
+  });
+
+  it('throws rather than caching an error page as zero plants', async () => {
+    respondWith('', false);
+    await expect(run()).rejects.toThrow(/503/);
+    respondWith(HEADER); // header only: a real answer with no rows is still no rows
+    await expect(run()).rejects.toThrow(/no rows/);
+  });
+
+  /* registry.ts:71-76: a fetcher MUST pass the signal through, or a timeout
+     only stops the scheduler waiting while the request runs on and collides
+     with the next tick. */
+  it('passes the abort signal to the request', async () => {
+    const spy = vi.fn(async (_url: string, _init: RequestInit) =>
+      ({ ok: true, status: 200, text: async () => `${HEADER}\nA,B,C,D,1,1,1,Coal,,` }));
+    vi.stubGlobal('fetch', spy);
+
+    const controller = new AbortController();
+    await earthLayer('power_plants')!.fetch(controller.signal);
+
+    expect(spy.mock.calls[0][1]?.signal).toBe(controller.signal);
+  });
+});
 
 const fixture = (over: Partial<EarthLayer> = {}): EarthLayer => ({
   id: 'earthquakes',

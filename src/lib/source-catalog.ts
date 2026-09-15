@@ -38,14 +38,18 @@ export interface SourceRow extends CatalogRow {
  * data, exactly as row 313-22 asked.
  */
 const POWER: SourceRow[] = [
-  {
-    id: 'power_plants', kind: 'power', doorKey: null, status: 'catalogued',
-    words: 'Electricity generating stations worldwide, with their fuel type and capacity.',
-    source: 'The Global Energy Monitor integrated power tracker, which consolidates its unit-level trackers into one dataset. The World Resources Institute global power plant database is the fallback if GEM terms do not permit this use.',
-    cadence: 'GEM publishes on a release schedule rather than a feed. The exact interval has not been read off the release page on this leg.',
-    licence: 'NOT READ. GEM states its terms on its own site and they must be read before any of this data lands; that is row 313-24 and it has not happened. The WRI fallback is published separately with its own terms, also unread here.',
-    sourceUrl: 'https://globalenergymonitor.org/projects/global-integrated-power-tracker/',
-  },
+  /*
+   * power_plants HAS GRADUATED to layers-catalog.ts.
+   *
+   * A row lives here while a source is named and nothing fetches it. Something
+   * fetches this one now, so it belongs in the catalogue that can prove itself
+   * against the door's real vocabulary — that is the whole distinction between
+   * these two files, and leaving a copy here would give one id two licence
+   * statements that are free to drift apart.
+   *
+   * Its licence is STILL UNREAD, and the graduated row says so verbatim. The
+   * move records that something fetches it, not that anyone read the terms.
+   */
   {
     id: 'power_lines', kind: 'power', doorKey: null, status: 'catalogued',
     words: 'High-voltage transmission lines and substations that move power between places.',
