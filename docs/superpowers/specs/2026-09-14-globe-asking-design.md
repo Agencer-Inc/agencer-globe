@@ -20,6 +20,43 @@ written; the corrections are recorded in §0.
 | 6 Teach the verb | **built** in `Agencer-Inc/agencer`, branch `feat/globe-hand-taught-313-77` |
 | 7 Filter grammar | **built** — and it was two rows, as predicted. See §8. |
 
+### A box is not a country, and the gap is two thirds
+
+Found by running the thing, not by reading it. `place: 'Poland'` against the
+power stations answers `matched: 563`, truthfully — and only **189 of those are
+in Poland**:
+
+| Country | Plants |
+|---|---|
+| Czech Republic | 284 |
+| **Poland** | **189** |
+| Germany | 71 |
+| Slovakia | 11 |
+| Russia · Lithuania · Belarus · Ukraine | 8 |
+
+`PLACES` stores rectangles, and a rectangle around Poland contains Bohemia,
+Lusatia, Kaliningrad and a slice of Belarus. The Czech Republic has more rows in
+this dataset than Poland does, so most of a "Polish" answer is Czech solar.
+
+**This is inherent to the design, not a defect in it.** A box is the right shape
+for what the table was built for — "flights over Paris" wants an area. It is the
+wrong shape for a political boundary, and the fix is not a tighter box but a
+second, non-geometric test:
+
+```jsonc
+{ "layer": "power_plants", "place": "poland",
+  "filter": [{ "field": "country", "op": "eq", "value": "Poland" }] }
+```
+
+The box does the cheap geometric cut (34,936 → 563), the clause does the
+political one (563 → 189). Neither works alone — which is the strongest
+argument for step 7 that this work produced, and it came from a demo rather than
+from the design.
+
+The limitation is recorded in `places.ts`'s own header so the next person meets
+it at the definition site. A layer whose rows carry no country has no escape,
+and `place` is then the best available answer rather than a correct one.
+
 ### The one thing that is deliberately not true yet
 
 **`power_plants` ships with its licence UNREAD, at the operator's explicit

@@ -22,6 +22,37 @@
  *                             |
  *                             +--miss--> { refusal: 'place_unknown' }
  *                                        (never fuzzy, never nearest)
+ *
+ * ── A BOX IS GEOMETRY. A COUNTRY IS GEOGRAPHY. THEY ARE NOT THE SAME ──
+ *
+ * Every row here is a RECTANGLE, and a rectangle around a country contains its
+ * neighbours. MEASURED, on the WRI power station set against the resolved
+ * Poland box:
+ *
+ *     563 stations inside the box
+ *       Czech Republic 284 | Poland 189 | Germany 71 | Slovakia 11
+ *       Russia 4 | Lithuania 2 | Belarus 1 | Ukraine 1
+ *
+ * Poland is 34% of its own answer, and the Czech Republic outnumbers it. A
+ * caller reading `matched: 563` as "power plants in Poland" is wrong by two
+ * thirds, and nothing in the answer says so — the door is honest about what it
+ * did, which is not the same as the question the caller thought it asked.
+ *
+ * THIS IS INHERENT, NOT A BUG TO FIX HERE. A box is the right shape for the
+ * thing this table was built for: "flights over Paris" wants an area, and an
+ * area is what a box is. It is the wrong shape for a political boundary, and
+ * the honest fix is not a tighter box — it is a second, non-geometric test.
+ *
+ * WHAT TO DO INSTEAD, when the rows carry the answer: narrow with the filter
+ * grammar on a property the publisher states.
+ *
+ *     { layer: 'power_plants', place: 'poland',
+ *       filter: [{ field: 'country', op: 'eq', value: 'Poland' }] }
+ *
+ * The box does the cheap geometric cut, 34,936 rows to 563; the clause does the
+ * political one, 563 to 189. Neither does the job alone. A layer whose rows
+ * carry no country has no such escape, and `place` is then the best available
+ * answer rather than a correct one — which a consumer needs to be told.
  */
 
 /** [west, south, east, north] in degrees. The order GeoJSON bbox uses. */
