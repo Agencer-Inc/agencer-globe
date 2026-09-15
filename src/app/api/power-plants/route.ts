@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { jsonUtf8 } from '@/lib/json-utf8';
 import { cachedSource } from '@/lib/sourceCache';
 import { osirisLayer } from '@/lib/layers-catalog';
 import { parsePowerPlants, type PowerPlant } from '@/lib/power-plants';
@@ -51,7 +51,7 @@ const loadPlants = cachedSource<PowerPlant>(
 export async function GET() {
   try {
     const plants = await loadPlants();
-    return NextResponse.json(
+    return jsonUtf8(
       {
         plants,
         total: plants.length,
@@ -65,7 +65,7 @@ export async function GET() {
     );
   } catch (error) {
     console.error('[OSIRIS] power plants error:', error);
-    return NextResponse.json(
+    return jsonUtf8(
       { plants: [], total: 0, error: error instanceof Error ? error.message : 'fetch failed' },
       { status: 502 },
     );

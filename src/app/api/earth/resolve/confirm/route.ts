@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { jsonUtf8 } from '@/lib/json-utf8';
 import { earthServerEnabled, EARTH_SERVER_FLAG } from '@/lib/earth/settings';
 import { readCaller } from '../route';
 import { bboxProblems, normalisePlace, rememberPlace, PLACES, type Bbox } from '@/lib/earth/places';
@@ -25,7 +26,7 @@ import { bboxProblems, normalisePlace, rememberPlace, PLACES, type Bbox } from '
  */
 
 function disabled() {
-  return NextResponse.json(
+  return jsonUtf8(
     {
       ok: false,
       refusal: 'disabled',
@@ -37,7 +38,7 @@ function disabled() {
 }
 
 function refuse(refusal: string, detail: string, status: number) {
-  return NextResponse.json(
+  return jsonUtf8(
     { ok: false, refusal, detail, timestamp: new Date().toISOString() },
     { status },
   );
@@ -91,7 +92,7 @@ export async function POST(request: NextRequest) {
       : `resolved from "${name}" and confirmed by ${caller.userId}; no note was supplied.`,
   });
 
-  return NextResponse.json(
+  return jsonUtf8(
     {
       ok: true,
       key: stored,

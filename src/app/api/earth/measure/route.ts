@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { jsonUtf8 } from '@/lib/json-utf8';
 import { planMeasure } from '@/lib/earth/measure';
 import { earthServerEnabled, EARTH_SERVER_FLAG, USER_HEADER } from '@/lib/earth/settings';
 
@@ -27,7 +28,7 @@ import { earthServerEnabled, EARTH_SERVER_FLAG, USER_HEADER } from '@/lib/earth/
  */
 
 function disabled() {
-  return NextResponse.json(
+  return jsonUtf8(
     {
       ok: false,
       refusal: 'disabled',
@@ -57,7 +58,7 @@ export async function POST(request: NextRequest) {
     // A body we cannot read is still no excuse for answering a stranger: name
     // the caller first, exactly as the readable path does.
     if (headerUser === null || headerUser.trim() === '') {
-      return NextResponse.json(
+      return jsonUtf8(
         {
           ok: false,
           refusal: 'anonymous',
@@ -67,7 +68,7 @@ export async function POST(request: NextRequest) {
         { status: 401 },
       );
     }
-    return NextResponse.json(
+    return jsonUtf8(
       {
         ok: false,
         refusal: 'malformed',
@@ -87,10 +88,10 @@ export async function POST(request: NextRequest) {
     // from 400 "what you sent does not parse", so a caller can tell a
     // credential problem from a typo without reading the prose.
     const status = outcome.refusal === 'anonymous' ? 401 : 400;
-    return NextResponse.json({ ...outcome, timestamp: new Date().toISOString() }, { status });
+    return jsonUtf8({ ...outcome, timestamp: new Date().toISOString() }, { status });
   }
 
-  return NextResponse.json(
+  return jsonUtf8(
     { ...outcome, timestamp: new Date().toISOString() },
     { headers: { 'Cache-Control': 'no-store' } },
   );

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { jsonUtf8 } from '@/lib/json-utf8';
 import { earthServerEnabled, EARTH_SERVER_FLAG, USER_HEADER } from '@/lib/earth/settings';
 import { selfOrigin } from '@/lib/earth/registry';
 import { toCandidates, type GeoHit } from '@/lib/earth/geocode';
@@ -40,7 +41,7 @@ import { toCandidates, type GeoHit } from '@/lib/earth/geocode';
 export const RESOLVE_TIMEOUT_MS = 20_000;
 
 function disabled() {
-  return NextResponse.json(
+  return jsonUtf8(
     {
       ok: false,
       refusal: 'disabled',
@@ -52,7 +53,7 @@ function disabled() {
 }
 
 function refuse(refusal: string, detail: string, status: number) {
-  return NextResponse.json(
+  return jsonUtf8(
     { ok: false, refusal, detail, timestamp: new Date().toISOString() },
     { status },
   );
@@ -128,7 +129,7 @@ export async function POST(request: NextRequest) {
 
   const candidates = toCandidates(name, hits);
 
-  return NextResponse.json(
+  return jsonUtf8(
     {
       ok: true,
       name,

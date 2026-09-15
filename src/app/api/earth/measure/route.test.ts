@@ -115,6 +115,23 @@ describe('POST /api/earth/measure', () => {
     expect(res.headers.get('Cache-Control')).toBe('no-store');
   });
 
+  /**
+   * A door that serves non-ASCII owes its callers the charset rather than the
+   * assumption. Measured: PowerShell 5.1 read Polish station names back as
+   * `BeÅchatÃ³w` because Invoke-RestMethod falls back to ISO-8859-1 when no
+   * charset is stated, and no console setting recovers a string decoded wrong.
+   */
+  it('says it is UTF-8, because a client that guesses guesses Latin-1', async () => {
+    const res = await POST(post({ path: [HONG_KONG, SHENZHEN] }, { [USER_HEADER]: 'op-1' }));
+    expect(res.headers.get('content-type')).toMatch(/charset=utf-8/i);
+  });
+
+  it('says so on a refusal too, which is where the place names live', async () => {
+    const res = await POST(post({ path: [HONG_KONG] }, { [USER_HEADER]: 'op-1' }));
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toMatch(/charset=utf-8/i);
+  });
+
   it('stamps every answer with the time it was given', async () => {
     const res = await POST(post({ path: [HONG_KONG, SHENZHEN] }, { [USER_HEADER]: 'op-1' }));
     expect((await res.json()).timestamp).toBeTypeOf('string');
