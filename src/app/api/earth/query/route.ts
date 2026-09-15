@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { planQuery, MAX_LIMIT } from '@/lib/earth/query';
 import { earthServerEnabled, EARTH_SERVER_FLAG, USER_HEADER } from '@/lib/earth/settings';
-import { allRecords, activeTimerCount } from '@/lib/earth/scheduler';
+import { allRecords, activeTimerCount, lastArming } from '@/lib/earth/scheduler';
 import { unservedLiveLayers } from '@/lib/earth/registry';
 import { sdkLayerIds } from '@/lib/earth/sdk-layers';
 
@@ -153,11 +153,26 @@ export async function GET(request: NextRequest) {
   // input instead of its output: a server with the flag set and no scheduler
   // running reported itself armed. Found by the outside voice.
   const activeTimers = activeTimerCount();
+  const attempt = lastArming();
 
   return NextResponse.json({
     ok: true,
     armed: activeTimers > 0,
     activeTimers,
+    /**
+     * WHETHER THE START-UP HOOK EVER RAN IN THE PROCESS SERVING THIS REQUEST.
+     *
+     * `armed: false` alone collapsed two different failures — the hook never
+     * ran, and the hook ran with the flag off — and a third that is worse than
+     * both: the hook ran in a DIFFERENT module instance and this door is
+     * reading an empty copy of the scheduler. That third one is what actually
+     * happened under Next 16 + Turbopack, and it cost a round trip to the
+     * server's stdout to identify, because nothing here could say it.
+     *
+     * false with the flag set means the wiring is wrong, not the switch.
+     */
+    hookRan: attempt !== null,
+    armReason: attempt?.reason ?? null,
     maxLimit: MAX_LIMIT,
     layers: allRecords().map(r => ({
       layer: r.layerId,

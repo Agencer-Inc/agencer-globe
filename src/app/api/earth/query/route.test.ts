@@ -242,6 +242,38 @@ describe('GET /api/earth/query reports what is held', () => {
     expect(body.activeTimers).toBe(1);
   });
 
+  /**
+   * `armed: false` collapsed three different failures: the hook never ran, it
+   * ran with the flag off, and it ran in a DIFFERENT MODULE INSTANCE so this
+   * door is reading an empty copy. The third is what happened on the rig under
+   * Next 16 + Turbopack, and identifying it cost a trip to the server's stdout
+   * because nothing in the answer could say which.
+   */
+  it('says whether the start-up hook ran at all, which armed alone cannot', async () => {
+    resetEarthScheduler();
+    const cold = await (await GET(get({ [USER_HEADER]: 'op-1' }))).json();
+    // Nobody asked: the wiring is missing, not the switch.
+    expect(cold.hookRan).toBe(false);
+    expect(cold.armReason).toBeNull();
+
+    armWith([NOTRE_DAME]);
+    const warm = await (await GET(get({ [USER_HEADER]: 'op-1' }))).json();
+    expect(warm.hookRan).toBe(true);
+    expect(warm.armReason).toBe('armed');
+  });
+
+  it('separates a hook that ran and was refused from one that never ran', async () => {
+    resetEarthScheduler();
+    // Somebody asked; the flag said no. Timers are still zero, but the reason
+    // is now a different word, and that word is the whole point.
+    startEarthServer({ layers: [], env: {} as NodeJS.ProcessEnv, preWarm: [] });
+
+    const body = await (await GET(get({ [USER_HEADER]: 'op-1' }))).json();
+    expect(body.armed).toBe(false);
+    expect(body.hookRan).toBe(true);
+    expect(body.armReason).toBe('disabled');
+  });
+
   it('lists live catalogue layers this server does not serve', async () => {
     armWith([NOTRE_DAME]);
     const body = await (await GET(get({ [USER_HEADER]: 'op-1' }))).json();

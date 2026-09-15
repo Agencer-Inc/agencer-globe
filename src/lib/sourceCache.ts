@@ -15,13 +15,24 @@
  *                  rather than dropping the layer to zero cameras.
  */
 
+import { processSingleton } from './process-singleton';
+
 interface Entry<T> {
   data: T[];
   expiresAt: number;
   inflight: Promise<T[]> | null;
 }
 
-const store = new Map<string, Entry<unknown>>();
+/**
+ * PER PROCESS, not per module instance. A module-level Map is a singleton only
+ * while the module is instantiated once, and under Next 16 with Turbopack a
+ * module imported by both instrumentation.ts and a route handler is not — so
+ * rows fetched at boot landed in a cache the door could not see.
+ *
+ * It also survives dev HMR, which would otherwise drop every cached row on an
+ * unrelated save. See lib/process-singleton.ts.
+ */
+const store = processSingleton('sourceCache.store', () => new Map<string, Entry<unknown>>());
 
 export const DEFAULT_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
