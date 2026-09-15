@@ -31,7 +31,7 @@
 
 import { osirisLayer, OSIRIS_LAYERS } from '@/lib/layers-catalog';
 import { httpJson } from '@/lib/httpJson';
-import { parseCsv, csvColumns } from '@/lib/csv';
+import type { PowerPlant } from '@/lib/power-plants';
 
 /**
  * One thing on the earth, flattened to what a bounded query needs.
@@ -213,81 +213,51 @@ async function fetchFlights(signal: AbortSignal): Promise<EarthItem[]> {
 }
 
 /**
- * Power stations, from the CSV the catalogue row names.
+ * Power stations, via this app's OWN /api/power-plants route.
  *
  * THE LICENCE FOR THIS DATA HAS NOT BEEN READ. The catalogue row says so in its
  * own licence field, and the query door carries that sentence verbatim onto
  * every answer, so nobody consuming this layer can miss it. Reading the terms is
- * 313-24 and it has not happened; this fetcher exists so the shape of the thing
- * can be seen working first.
+ * 313-24 and it has not happened; this exists so the shape of the thing can be
+ * seen working first.
+ *
+ * That route is the single owner of the upstream (Law 19): it holds the ~12MB
+ * CSV read, the parse and the day-long cache, none of which should exist twice.
+ * This fetcher therefore takes the route's answer and keeps only the
+ * query-shaped projection of it — the same relationship fetchFlights has with
+ * api/flights.
  *
  * A RELEASE, NOT A FEED. The published database is a versioned file of ~35,000
- * rows and about 12MB. It is read once a day — far more often than it changes —
- * because a long interval satisfies every rule registryProblems already
- * enforces, where a `static` layer kind would have earned a second code path
- * through the scheduler for exactly one row.
- *
- * Parsed with lib/csv.ts rather than a split on commas: owner names in this
- * dataset contain commas, and a naive split shifts latitude out of the
- * longitude column and puts the plant somewhere plausible and wrong.
+ * rows. It is read once a day, far more often than it changes, because a long
+ * interval satisfies every rule registryProblems already enforces where a
+ * `static` layer kind would have earned a second code path through the
+ * scheduler for exactly one row.
  */
 async function fetchPowerPlants(signal: AbortSignal): Promise<EarthItem[]> {
-  const res = await fetch(rowUrl('power_plants'), { headers: { Accept: 'text/csv' }, signal });
-  if (!res.ok) throw new Error(`power plant database answered ${res.status}`);
+  const res = await fetch(`${selfOrigin()}/api/power-plants`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!res.ok) throw new Error(`/api/power-plants answered ${res.status}`);
 
-  const rows = parseCsv(await res.text());
-  if (rows.length < 2) throw new Error('power plant database returned no rows');
-
-  // By NAME, never by position: column order is not part of the publisher's
-  // promise, and reading latitude from a fixed index works right up until a
-  // column is inserted before it, at which point every plant moves silently.
-  const at = csvColumns(rows[0]);
-  const { latitude, longitude, name, gppd_idnr: id, primary_fuel: fuel } = at;
-  if (latitude === undefined || longitude === undefined || id === undefined) {
-    throw new Error(
-      'power plant database is missing a column this fetcher needs ' +
-      `(latitude, longitude, gppd_idnr); it has: ${rows[0].join(', ')}`,
-    );
-  }
-
-  /**
-   * An EMPTY cell is not a zero.
-   *
-   * `Number('')` is 0 and 0 is finite, so a plain Number() on a blank latitude
-   * passes every check and puts the station at [0, 0] — a real place in the
-   * Gulf of Guinea. The pin for this caught it on the way in.
-   */
-  const num = (value: string | undefined): number =>
-    value === undefined || value.trim() === '' ? NaN : Number(value);
-
+  const data = (await res.json()) as { plants?: PowerPlant[] };
   const items: EarthItem[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const lat = num(row[latitude]);
-    const lng = num(row[longitude]);
-    // A row without a real position is skipped, not defaulted.
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-
-    const capacity = at.capacity_mw === undefined ? NaN : num(row[at.capacity_mw]);
-
+  for (const plant of data.plants ?? []) {
+    if (typeof plant?.lat !== 'number' || typeof plant?.lng !== 'number') continue;
     items.push({
-      id: row[id] || `${lat},${lng}`,
-      lat,
-      lng,
-      label: (name === undefined ? '' : row[name]) || 'Unnamed station',
-      // The sub-kind `filter` matches on, so "show me the coal plants in Poland"
-      // is a filter this door can already answer.
-      kind: ((fuel === undefined ? '' : row[fuel]) || 'unknown').toLowerCase(),
+      id: plant.id,
+      lat: plant.lat,
+      lng: plant.lng,
+      label: plant.name,
+      // The sub-kind `filter` matches on, so "the coal stations in Poland" is a
+      // question this door can already answer.
+      kind: plant.fuel,
       props: {
-        capacityMw: Number.isFinite(capacity) ? capacity : null,
-        country: at.country_long === undefined ? null : row[at.country_long] || null,
-        fuel: fuel === undefined ? null : row[fuel] || null,
-        owner: at.owner === undefined ? null : row[at.owner] || null,
-        // null, not a guess: an absent commissioning year means the publisher
-        // did not say, and 0 would assert a year nobody recorded.
-        commissioningYear: at.commissioning_year === undefined
-          ? null
-          : num(row[at.commissioning_year]) || null,
+        capacityMw: plant.capacityMw,
+        country: plant.country,
+        fuel: plant.fuel,
+        owner: plant.owner,
+        commissioningYear: plant.commissioningYear,
       },
     });
   }
