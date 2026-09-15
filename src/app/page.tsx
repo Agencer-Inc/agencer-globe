@@ -7,7 +7,7 @@ import { Layers, BarChart3, Newspaper, Search, X, Globe, MapPinned, Route, Radar
 import { type TerrainStatus } from '@/lib/map-terrain';
 import { loadCameraCatalog, mergeCameraCatalog } from '@/lib/camera-catalog';
 import { installControlDoor, parseAllowedOrigins, type Command as ControlCommand } from '@/lib/control-door';
-import { DEFAULT_ACTIVE_LAYERS } from '@/lib/layers-catalog';
+import { DEFAULT_ACTIVE_LAYERS, genericLayers } from '@/lib/layers-catalog';
 import IntelFeed from '@/components/IntelFeed';
 import MarketsPanel from '@/components/MarketsPanel';
 import ScmPanel from '@/components/ScmPanel';
@@ -754,6 +754,19 @@ export default function Dashboard() {
       // marker's epoch to draw a track that still passes through it.
       fetchEndpoint('/api/satellites', d => ({ ...d, satellites_at: d.timestamp }));
       layerFetchedRef.current.add('satellites');
+    }
+    /* ── THE GENERIC PATH ──
+       Every catalogue row carrying a route and a paint spec fetches here, with
+       no branch of its own. This loop replaces the per-layer `if` below for any
+       layer that opts in; the hand-written branches stay until each is migrated
+       deliberately, and layers-catalog's PAINT_EXEMPT names every one that has
+       not been, with its reason. */
+    for (const row of genericLayers()) {
+      if (activeLayers[row.id] && !layerFetchedRef.current.has(row.id)) {
+        const { dataKey, rowsKey } = row.paint;
+        fetchEndpoint(row.appRoute, (d: Record<string, unknown>) => ({ [dataKey]: d[rowsKey] }));
+        layerFetchedRef.current.add(row.id);
+      }
     }
     // Fires
     if (activeLayers.fires && !layerFetchedRef.current.has('fires')) {
