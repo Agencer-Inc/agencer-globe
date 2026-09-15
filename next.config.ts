@@ -19,6 +19,22 @@ const SHARED_SECURITY_HEADERS = [
 ];
 
 const nextConfig: NextConfig = {
+  /* DEV ONLY, and it is the difference between a live globe and a dead one.
+     Next's dev server blocks any /_next/* request whose Origin header names a
+     host outside ['**.localhost', 'localhost', ...this list] — see
+     server/lib/router-utils/block-cross-site-dev.js. A blocked request is
+     answered `403 Unauthorized`, and a 403 answering the /_next/hmr WEBSOCKET
+     UPGRADE reaches the browser as ERR_INVALID_HTTP_RESPONSE. That throw
+     happens inside hydrate(), so Turbopack's bootstrap never finishes, React
+     never mounts, and the page freezes on its server-rendered first frame.
+     Chunk GETs send no Origin and are never blocked, which is why the freeze
+     looks like a rendering bug rather than a network one.
+
+     127.0.0.1 is NOT a default: only the word `localhost` is. So the numeric
+     loopback — which EARTH_SELF_ORIGIN uses, and which the agencer pane framed
+     this app by — was dead while the identical page on `localhost` was fine.
+     Hostnames, not origins: the blocker compares parseUrl(origin).hostname. */
+  allowedDevOrigins: ['127.0.0.1'],
   turbopack: {
     rules: {
       'maplibre-gl.mjs': {
