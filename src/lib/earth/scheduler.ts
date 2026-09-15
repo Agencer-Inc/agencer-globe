@@ -44,6 +44,7 @@
  */
 
 import { seedSource, peekSource } from '@/lib/sourceCache';
+import { processSingleton } from '@/lib/process-singleton';
 import { osirisLayer } from '@/lib/layers-catalog';
 import { earthServerEnabled, EARTH_ARMED_TOKEN } from './settings';
 import { EARTH_LAYERS, PRE_WARM, type EarthItem, type EarthLayer } from './registry';
@@ -83,8 +84,51 @@ export function earthCacheKey(layerId: string): string {
   return `earth:${layerId}`;
 }
 
-const records = new Map<string, LayerRecord>();
-const timers = new Map<string, ReturnType<typeof setInterval>>();
+/**
+ * PER PROCESS, not per module instance.
+ *
+ * These were plain module-level Maps, which is a singleton only while the
+ * module is instantiated once. Under Next 16 with Turbopack, instrumentation.ts
+ * and the route handlers are separate module graphs: the scheduler armed and
+ * pre-warmed in one copy while the query door read the other and answered
+ * `armed: false, activeTimers: 0, layers: []` over a cache holding 35,000 power
+ * stations. Both were honest about the copy they could see.
+ *
+ * See lib/process-singleton.ts for the measurement and the reasoning.
+ */
+const records = processSingleton('earth.scheduler.records', () => new Map<string, LayerRecord>());
+const timers = processSingleton(
+  'earth.scheduler.timers',
+  () => new Map<string, ReturnType<typeof setInterval>>(),
+);
+
+/**
+ * WHETHER ANYONE EVER TRIED TO ARM, and what happened.
+ *
+ * `armed: false` used to mean two different things — "the start-up hook never
+ * ran" and "it ran and the flag was off" — and a reader could not tell them
+ * apart from outside. That cost a round trip on the Turbopack split above: the
+ * one question worth asking, "did register() run at all?", could only be
+ * answered by reading the server's stdout.
+ *
+ * Null means NOBODY CALLED startEarthServer in this process. That is a
+ * different fact from a call that returned disabled, and it is the one that
+ * says the hook is not wired rather than the flag is not set.
+ */
+export interface ArmingAttempt {
+  at: number;
+  reason: 'disabled' | 'armed';
+  started: string[];
+}
+
+const arming = processSingleton<{ last: ArmingAttempt | null }>(
+  'earth.scheduler.arming',
+  () => ({ last: null }),
+);
+
+export function lastArming(): ArmingAttempt | null {
+  return arming.last;
+}
 
 function blankRecord(layerId: string): LayerRecord {
   return {
@@ -235,6 +279,11 @@ export function startEarthServer(opts: StartOptions = {}): EarthServerHandle {
   } = opts;
 
   if (!earthServerEnabled(env)) {
+    // Recorded even on the dark path: "somebody asked and the flag said no" is
+    // a different fact from "nobody asked", and only the record tells them
+    // apart. It writes no timer, no cache entry and no upstream call, so the
+    // byte-identical guarantee is untouched.
+    arming.last = { at: Date.now(), reason: 'disabled', started: [] };
     return {
       armed: false,
       reason: 'disabled',
@@ -285,6 +334,8 @@ export function startEarthServer(opts: StartOptions = {}): EarthServerHandle {
     (skipped.length ? ` | not live, no fetcher: ${skipped.join(', ')}` : ''),
   );
 
+  arming.last = { at: Date.now(), reason: 'armed', started: [...started] };
+
   const warmSet = layers.filter(l => preWarm.includes(l.id));
   const warmed = Promise.all(warmSet.map(l => tickLayer(l))).then(() => undefined);
 
@@ -301,6 +352,9 @@ export function stopEarthServer(): void {
 export function resetEarthScheduler(): void {
   stopEarthServer();
   records.clear();
+  // The arming record goes too, or one test's attempt is visible to the next
+  // now that this state is per-PROCESS rather than per-module.
+  arming.last = null;
 }
 
 /** How many timers are live. The dark-path pin counts this rather than

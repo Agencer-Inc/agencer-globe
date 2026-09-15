@@ -33,7 +33,10 @@
  * not borrow this file's green light.
  *
  * @see source-catalog.ts for the rows this file deliberately does not hold.
+ * @see layer-paint.ts for the generic drawing path a row can opt into.
  */
+
+import { isGenericLayer, type PaintSpec } from './layer-paint';
 
 /**
  * Every layer the app has, with the default it boots with.
@@ -70,6 +73,10 @@ export const DEFAULT_ACTIVE_LAYERS = {
   weather: false,
   radiation: false,
   infrastructure: false,
+  /* Graduated from source-catalog.ts, which is where a source waits until
+     something fetches it. Off by default: it is a 12MB once-a-day dataset and
+     nothing about the first paint needs it. */
+  power_plants: false,
   global_incidents: true,
   war_alerts: false,
   day_night: true,
@@ -113,6 +120,8 @@ export const LAYER_IDS = Object.keys(DEFAULT_ACTIVE_LAYERS) as LayerId[];
  */
 export type SourceStatus = 'live' | 'dead' | 'render_only' | 'unsourced' | 'catalogued';
 
+export type { PaintSpec };
+
 export interface CatalogRow {
   /** Stable snake_case. For osiris rows this is the door key, verbatim. */
   id: string;
@@ -141,6 +150,83 @@ export interface OsirisRow extends CatalogRow {
   kind: 'osiris';
   id: LayerId;
   doorKey: LayerId;
+  /**
+   * The app route this layer's rows come from, when the generic path fetches
+   * it. Absent means page.tsx still fetches it in its own hand-written branch.
+   */
+  appRoute?: string;
+  /**
+   * How the layer is drawn, when the generic path draws it. Absent means
+   * OsirisMap still hand-writes its paint, and PAINT_EXEMPT below must say why.
+   */
+  paint?: PaintSpec;
+}
+
+/**
+ * Live layers that the generic paint path does NOT draw, and the reason.
+ *
+ * The generic path was built alongside the hand-wired one rather than instead
+ * of it: a big-bang rewrite of a 2,805-line renderer is how globe work stops
+ * shipping. So every live layer is either generic or named here, and
+ * genericPaintProblems() below asserts exactly that — which makes "what is
+ * still hand-wired" a test output rather than something a person counts by
+ * hand, and makes each migration a deletion from this map.
+ */
+export const PAINT_EXEMPT: Readonly<Record<string, string>> = {
+  flights: 'Hand-wired: decimated per zoom and split across four aircraft layers that share one fetch.',
+  private: 'Hand-wired: a slice of the shared aircraft fetch, not a source of its own.',
+  jets: 'Hand-wired: a slice of the shared aircraft fetch, not a source of its own.',
+  military: 'Hand-wired: a slice of the shared aircraft fetch, not a source of its own.',
+  maritime: 'Hand-wired: vessel icons are rotated by heading, which the generic circle paint cannot express.',
+  satellites: 'Hand-wired: drawn by a custom WebGL layer at true orbital altitude, not as circles.',
+  sat_comms: 'Hand-wired: a filtered slice of the satellite WebGL layer.',
+  sat_military: 'Hand-wired: a filtered slice of the satellite WebGL layer.',
+  sat_navigation: 'Hand-wired: a filtered slice of the satellite WebGL layer.',
+  sat_earth: 'Hand-wired: a filtered slice of the satellite WebGL layer.',
+  sat_science: 'Hand-wired: a filtered slice of the satellite WebGL layer.',
+  cctv: 'Hand-wired: three stacked layers (glow, dot, label) plus the preview tiles that read the same source.',
+  earthquakes: 'Hand-wired: radius and colour both interpolate on magnitude, and the label is a built string.',
+  fires: 'Hand-wired: drawn as a blurred heat circle rather than a discrete marker.',
+  weather: 'Hand-wired: severity drives a match expression across several event types.',
+  global_incidents: 'Hand-wired: shares its source with the severity-coloured incident labels.',
+  terrain_elevation: 'Hand-wired: a raster DEM source, not a point layer at all.',
+  malware: 'Hand-wired: drawn as arcs between two points rather than as points.',
+  cyber_attacks: 'Hand-wired: drawn as animated arcs between two points rather than as points.',
+  gdelt_events: 'Hand-wired: shares the incident source and its severity colouring.',
+  cf_outages: 'Hand-wired: country polygons shaded by outage severity, not points.',
+  cf_attacks: 'Hand-wired: country polygons shaded by attack volume, not points.',
+};
+
+/**
+ * Live layers that neither carry a paint spec nor say why they do not.
+ *
+ * A validator in words, pinned like every other one here (Law 31). A layer that
+ * is silently neither is a layer nobody decided about.
+ */
+/** The rows the generic path fetches and draws. */
+export function genericLayers(rows: readonly OsirisRow[] = OSIRIS_LAYERS) {
+  return rows.filter(isGenericLayer);
+}
+
+export function genericPaintProblems(rows: readonly OsirisRow[] = OSIRIS_LAYERS): string[] {
+  const problems: string[] = [];
+  for (const row of rows) {
+    if (row.status !== 'live') continue;
+    const generic = row.paint !== undefined;
+    const exempt = Object.hasOwn(PAINT_EXEMPT, row.id);
+    if (!generic && !exempt) {
+      problems.push(`${row.id} is live with no paint spec and no entry in PAINT_EXEMPT saying why`);
+    }
+    if (generic && exempt) {
+      problems.push(`${row.id} has a paint spec AND an exemption; delete the exemption, it has migrated`);
+    }
+  }
+  for (const id of Object.keys(PAINT_EXEMPT)) {
+    if (!rows.some(row => row.id === id)) {
+      problems.push(`PAINT_EXEMPT names ${id}, which is not a catalogue row`);
+    }
+  }
+  return problems;
 }
 
 /**
@@ -370,6 +456,66 @@ export const OSIRIS_LAYERS: readonly OsirisRow[] = [
     cadence: 'Read once when the layer opens. The list only changes when someone edits the file.',
     licence: 'No dataset licence to record, because there is no dataset. The per-row Wikipedia links carry Wikipedia terms.',
     sourceUrl: null,
+  },
+  {
+    /**
+     * PROTOTYPE ROW. THE LICENCE HAS NOT BEEN READ.
+     *
+     * The licence text below is carried VERBATIM from the row this graduated
+     * from (source-catalog.ts), unchanged, and it still says NOT READ — because
+     * it still has not been. This row is live so the fetcher can run and the
+     * thing can be seen working; that is a prototyping decision taken
+     * deliberately and recorded here rather than laundered into a green field.
+     *
+     * The query door reads licence verbatim onto every answer (query.ts:31-33),
+     * so every consumer of this layer is told, in the answer itself, that the
+     * terms are unread. Nothing about this row should ship to anyone outside
+     * this prototype until 313-24 reads the publisher's terms and replaces the
+     * sentence below with what they actually say.
+     *
+     * WHAT IS ACTUALLY FETCHED. The WRI Global Power Plant Database, which the
+     * original row already named as the fallback. GEM publishes its integrated
+     * tracker as a spreadsheet release rather than anything a fetcher can pull,
+     * so it is not reachable on a cadence at all; source and sourceUrl name the
+     * dataset really being read, because those two fields are also carried
+     * verbatim onto answers and a row naming GEM while serving WRI would
+     * misattribute every plant on the map.
+     */
+    id: 'power_plants', kind: 'osiris', doorKey: 'power_plants', status: 'live',
+    /**
+     * THE FIRST LAYER ON THE GENERIC PAINT PATH. It has no hand-written branch
+     * in page.tsx and no hand-written addLayer in OsirisMap: the two fields
+     * below are the whole of its wiring, which is the property the generic path
+     * exists to buy.
+     */
+    appRoute: '/api/power-plants',
+    paint: {
+      dataKey: 'power_plants',
+      rowsKey: 'plants',
+      // Colour by fuel, which is also the EarthItem `kind` the filter matches
+      // on, so what the eye groups and what a query selects are the same thing.
+      color: {
+        field: 'fuel',
+        match: {
+          coal: '#D32F2F', gas: '#E65100', oil: '#8D6E63', nuclear: '#F9A825',
+          hydro: '#29B6F6', wind: '#00E676', solar: '#FFD700', biomass: '#8BC34A',
+          geothermal: '#AB47BC', waste: '#78909C', storage: '#26A69A',
+        },
+        fallback: '#9E9E9E',
+      },
+      // Capacity spans five orders of magnitude, so the stops are picked to
+      // separate a village diesel set from Belchatow rather than to be linear.
+      sizeBy: { field: 'capacityMw', stops: [[0, 2], [100, 4], [1000, 7], [5000, 12]] },
+      radius: [[1, 2], [5, 4], [10, 7]],
+      label: { field: 'name', minZoom: 7 },
+      strokeColor: '#000000',
+      opacity: 0.85,
+    },
+    words: 'Electricity generating stations worldwide, with their fuel type and capacity.',
+    source: 'The World Resources Institute Global Power Plant Database, read as the published CSV. This is the fallback the 313-22 row already named. The Global Energy Monitor integrated power tracker remains the preferred upstream, but it publishes spreadsheet releases rather than a fetchable feed.',
+    cadence: 'The published database is a versioned release, not a feed. This server re-reads it once a day, which is far more often than it changes.',
+    licence: 'NOT READ. GEM states its terms on its own site and they must be read before any of this data lands; that is row 313-24 and it has not happened. The WRI fallback is published separately with its own terms, also unread here.',
+    sourceUrl: 'https://raw.githubusercontent.com/wri/global-power-plant-database/master/output_database/global_power_plant_database.csv',
   },
   {
     id: 'global_incidents', kind: 'osiris', doorKey: 'global_incidents', status: 'live',

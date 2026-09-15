@@ -6,10 +6,11 @@
  * whole point is that a caller gets at most MAX_LIMIT rows that are already in
  * memory, with the provenance the catalogue records attached.
  *
- *   { userId?, layer, place|bbox?, filter?, limit? }
+ *   { userId?, layer, place|bbox|ring?, filter?, limit? }
  *     |
  *     +-- no userId ------------------> refuse `anonymous`      (THE-GATE rule 3)
  *     +-- bad shape ------------------> refuse `malformed`
+ *     +-- two scopes at once ---------> refuse `malformed`, naming both
  *     +-- place not in the table -----> refuse `place_unknown`  (never guesses)
  *     |
  *     +-- sdk_<provider> in the store -> answer from the ingest store, always warm
@@ -21,7 +22,7 @@
  *     +-- registered, never fetched --> ANSWER, cold, reason `never_fetched`
  *     |
  *     v
- *   warm: filter -> bbox -> count -> clamp to 50 -> say whether it clamped
+ *   warm: filter -> bbox|ring -> count -> clamp to 50 -> say whether it clamped
  *
  * Cold is read from the scheduler's record and NEVER from whether the cache has
  * rows: a layer that fetched and legitimately got nothing is warm with zero
@@ -38,6 +39,8 @@ import { earthLayer } from './registry';
 import type { EarthItem } from './registry';
 import { layerRecord, layerItems } from './scheduler';
 import { resolvePlace, bboxProblems, inBbox, type Bbox } from './places';
+import { selectEarthItems, ringProblems } from './select';
+import { filterProblems, matchesClauses, type FilterClause } from './filter';
 import { sdkLayerItems, sdkIdIsClaimable } from './sdk-layers';
 
 /** The hard ceiling. A caller asking for more is answered with 50 and told so. */
@@ -76,6 +79,8 @@ export interface EarthQueryInput {
   layer?: unknown;
   place?: unknown;
   bbox?: unknown;
+  /** A drawn shape, as [lng, lat] vertices. Exclusive with place and bbox. */
+  ring?: unknown;
   filter?: unknown;
   limit?: unknown;
 }
@@ -109,7 +114,11 @@ export interface EarthAnswer {
   lastError: string | null;
   place: string | null;
   bbox: Bbox | null;
-  filter: string | null;
+  /** The shape the answer was swept against, echoed back so a caller can see
+   *  which of its shapes this answer belongs to. */
+  ring: number[][] | null;
+  /** Echoed back in the form it was sent: a substring, or the clauses applied. */
+  filter: string | FilterClause[] | null;
   limit: number;
   limitRequested: number;
   /** True when the caller asked for more than MAX_LIMIT. Said out loud. */
@@ -157,6 +166,18 @@ function matchesFilter(item: EarthItem, filter: string): boolean {
   return item.kind.includes(filter) || item.label.toLowerCase().includes(filter);
 }
 
+/**
+ * One filter, whichever form it came in.
+ *
+ * The string form is untouched and still reads only kind and label. The
+ * structured form reaches into props, which is what makes "which ones are X"
+ * askable at all — see filter.ts for why the two live side by side rather than
+ * one replacing the other.
+ */
+function matchesAnyFilter(item: EarthItem, filter: string | FilterClause[]): boolean {
+  return typeof filter === 'string' ? matchesFilter(item, filter) : matchesClauses(item, filter);
+}
+
 function shape(
   layer: string,
   base: {
@@ -168,12 +189,20 @@ function shape(
     lastError: string | null;
     items: EarthItem[];
   },
-  scope: { place: string | null; bbox: Bbox | null; filter: string | null },
+  scope: {
+    place: string | null;
+    bbox: Bbox | null;
+    ring: number[][] | null;
+    filter: string | FilterClause[] | null;
+  },
   limits: { limit: number; limitRequested: number; limitClamped: boolean },
 ): EarthAnswer {
   let items = base.items;
-  if (scope.filter) items = items.filter(i => matchesFilter(i, scope.filter!));
+  if (scope.filter) items = items.filter(i => matchesAnyFilter(i, scope.filter!));
   if (scope.bbox) items = items.filter(i => inBbox(i.lat, i.lng, scope.bbox!));
+  // A ring is the third scope and never runs beside a box: planQuery refuses
+  // two scopes before reaching here, so this is an else in everything but form.
+  if (scope.ring) items = selectEarthItems(scope.ring, items);
 
   const matched = items.length;
   const returned = items.slice(0, limits.limit);
@@ -206,15 +235,24 @@ export function planQuery(input: EarthQueryInput, ctx: QueryContext = {}): Earth
     return refuse('anonymous', 'This door names its caller. Send a user id; anonymous queries are refused.');
   }
 
-  const { layer, place, bbox, filter, limit } = input;
+  const { layer, place, bbox, ring, filter, limit } = input;
 
   if (typeof layer !== 'string' || layer.trim() === '') {
     return refuse('malformed', 'layer is required and must be a non-empty string.');
   }
   const layerId = layer.trim();
 
-  if (place !== undefined && bbox !== undefined) {
-    return refuse('malformed', 'Send place OR bbox, not both. Two scopes cannot both be the answer.');
+  // Three scopes now, and the rule is the one it always was: no two of them can
+  // both be the answer. Named rather than counted, so a caller that sent two
+  // learns WHICH two it sent.
+  const sent = ([['place', place], ['bbox', bbox], ['ring', ring]] as const)
+    .filter(([, value]) => value !== undefined)
+    .map(([label]) => label);
+  if (sent.length > 1) {
+    return refuse(
+      'malformed',
+      `Send one scope, not ${sent.length}: got ${sent.join(' and ')}. Two scopes cannot both be the answer.`,
+    );
   }
 
   // Limit: clamp rather than refuse, and say so in the answer.
@@ -235,6 +273,7 @@ export function planQuery(input: EarthQueryInput, ctx: QueryContext = {}): Earth
   // Scope.
   let scopeBbox: Bbox | null = null;
   let scopePlace: string | null = null;
+  let scopeRing: number[][] | null = null;
   if (place !== undefined) {
     if (typeof place !== 'string') return refuse('malformed', 'place must be a string.');
     const resolved = resolvePlace(place);
@@ -245,16 +284,28 @@ export function planQuery(input: EarthQueryInput, ctx: QueryContext = {}): Earth
     const problems = bboxProblems(bbox);
     if (problems.length) return refuse('malformed', problems.join('; '));
     scopeBbox = bbox as Bbox;
+  } else if (ring !== undefined) {
+    const problems = ringProblems(ring);
+    if (problems.length) return refuse('malformed', problems.join('; '));
+    scopeRing = ring as number[][];
   }
 
-  let scopeFilter: string | null = null;
+  let scopeFilter: string | FilterClause[] | null = null;
   if (filter !== undefined) {
-    if (typeof filter !== 'string') return refuse('malformed', 'filter must be a string.');
-    const trimmed = filter.trim().toLowerCase();
-    scopeFilter = trimmed === '' ? null : trimmed;
+    if (typeof filter === 'string') {
+      const trimmed = filter.trim().toLowerCase();
+      scopeFilter = trimmed === '' ? null : trimmed;
+    } else {
+      // Anything that is not a string is read as the structured form, so a
+      // caller that sent the wrong shape entirely is told what a clause looks
+      // like rather than "filter must be a string", which was true and useless.
+      const problems = filterProblems(filter);
+      if (problems.length) return refuse('malformed', problems.join('; '));
+      scopeFilter = filter as FilterClause[];
+    }
   }
 
-  const scope = { place: scopePlace, bbox: scopeBbox, filter: scopeFilter };
+  const scope = { place: scopePlace, bbox: scopeBbox, ring: scopeRing, filter: scopeFilter };
 
   // Our own trove. Checked before the catalogue so an ingested provider is
   // reachable, but sdkIdIsClaimable refuses any id the catalogue owns, so a

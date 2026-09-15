@@ -3,9 +3,12 @@ import {
   DEFAULT_ACTIVE_LAYERS,
   LAYER_IDS,
   OSIRIS_LAYERS,
+  PAINT_EXEMPT,
   catalogRowProblems,
+  genericPaintProblems,
   osirisLayer,
   type CatalogRow,
+  type OsirisRow,
 } from './layers-catalog';
 
 /**
@@ -151,6 +154,56 @@ describe('every osiris row says something true', () => {
     expect(live.length, 'no live layers catalogued at all').toBeGreaterThan(0);
     for (const row of live) {
       expect(row.sourceUrl, `${row.id} is live with no url`).not.toBeNull();
+    }
+  });
+});
+
+/**
+ * The generic paint path was built ALONGSIDE the hand-wired one, because a
+ * big-bang rewrite of a 2,805-line renderer is how globe work stops shipping.
+ * These pins are what stop "alongside" quietly becoming "forgotten": every live
+ * layer is either generic or named as an exemption with a reason, and migrating
+ * one is a deletion from that map.
+ */
+describe('every live layer is either drawn generically or says why not', () => {
+  it('has no layer that is silently neither', () => {
+    expect(genericPaintProblems()).toEqual([]);
+  });
+
+  it('catches a live row with no paint and no exemption', () => {
+    const stray = goodRow({ id: 'brand_new', status: 'live' }) as OsirisRow;
+    expect(genericPaintProblems([stray]).join(' ')).toMatch(/brand_new/);
+  });
+
+  it('catches a row that has migrated but kept its exemption', () => {
+    const migrated = {
+      ...goodRow({ id: 'flights', status: 'live' }),
+      paint: { dataKey: 'flights', color: '#fff', radius: [[1, 2]] },
+    } as unknown as OsirisRow;
+    expect(genericPaintProblems([migrated]).join(' ')).toMatch(/delete the exemption/);
+  });
+
+  it('catches an exemption naming a layer that no longer exists', () => {
+    expect(genericPaintProblems([]).join(' ')).toMatch(/not a catalogue row/);
+  });
+
+  it('ignores a row that is not live, because nothing draws it anyway', () => {
+    // Held against the real catalogue, so the exemption map still has its rows
+    // to match. A dead layer needs no paint and must not be reported.
+    const dead = goodRow({ id: 'gone', status: 'dead', sourceUrl: null }) as OsirisRow;
+    expect(genericPaintProblems([...OSIRIS_LAYERS, dead])).toEqual([]);
+  });
+
+  it('draws power_plants generically, with a route and a spec', () => {
+    const row = osirisLayer('power_plants');
+    expect(row?.appRoute).toBe('/api/power-plants');
+    expect(row?.paint?.dataKey).toBe('power_plants');
+    expect(PAINT_EXEMPT.power_plants).toBeUndefined();
+  });
+
+  it('gives every exemption a reason, not a bare marker', () => {
+    for (const [id, reason] of Object.entries(PAINT_EXEMPT)) {
+      expect(reason.trim().length, `${id} has an empty reason`).toBeGreaterThan(20);
     }
   });
 });

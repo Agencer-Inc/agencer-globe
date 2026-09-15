@@ -1,6 +1,73 @@
 import { describe, it, expect } from 'vitest';
 import { classifyKind, normalizePhoton, normalizeNominatim, mergeResults, type GeoResult } from './route';
 
+/**
+ * Both upstreams report a real bounding box for administrative features, and
+ * both were being read for their centre point and thrown away. The earth
+ * server's place table stores a BOX, not a dot, because "flights over Paris"
+ * needs an area — so the box is the whole reason a country or a region can be
+ * resolved at all.
+ *
+ * Each provider states its corners in its OWN order, and neither is the GeoJSON
+ * one. Getting a swap wrong produces a box that is wrong but entirely
+ * plausible — the failure this repo refuses — so both are pinned, by hand,
+ * against a real place whose extent can be checked on a map.
+ */
+describe('the bounding box both providers already send', () => {
+  it('reorders Photon extent [west, north, east, south] into [west, south, east, north]', () => {
+    const luxembourg = {
+      geometry: { coordinates: [6.1296, 49.8153] as [number, number] },
+      properties: {
+        name: 'Luxembourg', country: 'Luxembourg',
+        osm_key: 'place', osm_value: 'country',
+        extent: [5.7345, 50.1827, 6.5306, 49.4479],
+      },
+    };
+    const got = normalizePhoton(luxembourg);
+
+    expect(got?.bbox).toEqual([5.7345, 49.4479, 6.5306, 50.1827]);
+    expect(got?.bboxSource).toBe('upstream');
+    // south below north, west below east: the invariant a swap breaks.
+    expect(got!.bbox![1]).toBeLessThan(got!.bbox![3]);
+    expect(got!.bbox![0]).toBeLessThan(got!.bbox![2]);
+  });
+
+  it('reorders Nominatim boundingbox [south, north, west, east], parsing its strings', () => {
+    const poland = {
+      display_name: 'Polska', name: 'Polska', lat: '52.215', lon: '19.134',
+      class: 'boundary', type: 'administrative',
+      boundingbox: ['49.0020460', '54.8357841', '14.1229290', '24.1458933'],
+    };
+    const got = normalizeNominatim(poland);
+
+    expect(got?.bbox).toEqual([14.122929, 49.002046, 24.1458933, 54.8357841]);
+    expect(got?.bboxSource).toBe('upstream');
+  });
+
+  it('leaves the box absent when the provider sent none, rather than inventing one', () => {
+    const noExtent = {
+      geometry: { coordinates: [2.2945, 48.8584] as [number, number] },
+      properties: { name: 'Eiffel Tower', osm_key: 'man_made', osm_value: 'tower' },
+    };
+    expect(normalizePhoton(noExtent)?.bbox).toBeUndefined();
+    expect(normalizePhoton(noExtent)?.bboxSource).toBeUndefined();
+  });
+
+  it('drops a malformed box rather than passing a half-read one through', () => {
+    const shortExtent = {
+      geometry: { coordinates: [6.1296, 49.8153] as [number, number] },
+      properties: { name: 'X', osm_key: 'place', extent: [1, 2, 3] },
+    };
+    expect(normalizePhoton(shortExtent)?.bbox).toBeUndefined();
+
+    const badNumbers = {
+      display_name: 'X', name: 'X', lat: '1', lon: '1',
+      boundingbox: ['not', 'a', 'number', 'here'],
+    };
+    expect(normalizeNominatim(badNumbers)?.bbox).toBeUndefined();
+  });
+});
+
 describe('classifyKind', () => {
   it('separates the kinds the UI gives distinct icons', () => {
     expect(classifyKind('place', 'country')).toBe('country');

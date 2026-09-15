@@ -15,6 +15,10 @@ import LiveNewsPreviews, { type PreviewFeed } from '@/components/LiveNewsPreview
 import { attachTerrain, type TerrainStatus } from '@/lib/map-terrain';
 
 import { applyMapProjection } from '@/lib/map-projection';
+import { genericLayers } from '@/lib/layers-catalog';
+import {
+  paintIds, paintLayerIds, circlePaint, labelLayout, labelPaint, rowsToFeatureCollection,
+} from '@/lib/layer-paint';
 
 /** The catalogue fields the satellite layer and its popup actually read. */
 interface SatelliteRow {
@@ -2403,6 +2407,68 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       console.warn('Style switch failed:', e);
     }
   }, [mapReady, mapStyle]);
+
+  /* ── THE GENERIC PAINT PATH ──
+     One effect that draws every catalogue row carrying a paint spec. A layer
+     that opts in needs no addLayer of its own here and no fetch branch in
+     page.tsx: the row is the whole of its wiring.
+
+     Built ALONGSIDE the hand-written layers above, not instead of them. Those
+     are migrated one at a time, and layers-catalog's PAINT_EXEMPT names every
+     live layer still hand-wired together with the reason — so what remains is a
+     test output rather than something a person counts by hand.
+
+     Sources and layers are created lazily here rather than in the style-load
+     block, using the same getSource-or-addSource pattern the ARCGIS and
+     drawn-polygon effects already use. That keeps the whole path additive: no
+     edit to the style-load sequence, and nothing to unpick if a row is removed. */
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+
+    for (const row of genericLayers()) {
+      const spec = row.paint;
+      const ids = paintIds(row.id);
+      const on = Boolean(activeLayers[row.id]);
+
+      // An off layer keeps its source and drops its rows, rather than removing
+      // the layers: toggling then costs a setData instead of a rebuild, which
+      // is what the hand-wired layers do too (:1578).
+      // `data` is already loosely typed on this component's props, and
+      // rowsToFeatureCollection takes unknown and validates every row itself,
+      // so nothing here needs a cast to read one key off it.
+      const collection = on ? rowsToFeatureCollection(data?.[spec.dataKey]) : EMPTY_FC;
+
+      const existing = map.getSource(ids.source) as maplibregl.GeoJSONSource | undefined;
+      if (!existing) {
+        map.addSource(ids.source, { type: 'geojson', data: collection as never });
+      } else {
+        existing.setData(collection as never);
+      }
+
+      if (!map.getLayer(ids.circle)) {
+        map.addLayer({
+          id: ids.circle,
+          type: 'circle',
+          source: ids.source,
+          paint: circlePaint(spec) as never,
+        });
+      }
+
+      if (spec.label && !map.getLayer(ids.label)) {
+        map.addLayer({
+          id: ids.label,
+          type: 'symbol',
+          source: ids.source,
+          minzoom: spec.label.minZoom,
+          layout: labelLayout(spec) as never,
+          paint: labelPaint(spec) as never,
+        });
+      }
+
+      setVis(paintLayerIds(row.id, spec), on);
+    }
+  }, [mapReady, data, activeLayers, setVis]);
 
   // ── DRAWN POLYGONS ──
   useEffect(() => {

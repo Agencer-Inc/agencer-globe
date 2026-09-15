@@ -1,9 +1,80 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   EARTH_LAYERS, PRE_WARM, earthLayer, registryProblems, unservedLiveLayers, selfOrigin,
   type EarthLayer,
 } from './registry';
 import { osirisLayer, OSIRIS_LAYERS } from '@/lib/layers-catalog';
+
+afterEach(() => vi.unstubAllGlobals());
+
+/**
+ * The power plant fetcher, driven through its real registry row so the test
+ * exercises the wiring and not a copy of it.
+ *
+ * NOTE FOR ANYONE READING THIS LAYER'S DATA: its licence has not been read.
+ * The catalogue row says so in its own licence field and the query door carries
+ * that sentence onto every answer. This pins the SHAPE of what the fetcher
+ * produces, and says nothing about whether the data may be used.
+ */
+describe('the power plant fetcher', () => {
+  const PLANT = {
+    id: 'WRI1000001', name: 'Belchatow', lat: 51.266, lng: 19.33, fuel: 'coal',
+    capacityMw: 5298, country: 'Poland', owner: 'PGE', commissioningYear: 1988,
+  };
+
+  const respondWith = (body: unknown, ok = true) =>
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok, status: ok ? 200 : 503, json: async () => body })));
+
+  const run = () => earthLayer('power_plants')!.fetch(new AbortController().signal);
+
+  it('projects the route answer into the query shape, fuel as the kind a filter matches on', async () => {
+    respondWith({ plants: [PLANT] });
+    const [item] = await run();
+
+    expect(item.id).toBe('WRI1000001');
+    expect(item.lat).toBe(51.266);
+    expect(item.label).toBe('Belchatow');
+    expect(item.kind).toBe('coal');
+    expect(item.props).toMatchObject({ capacityMw: 5298, country: 'Poland', owner: 'PGE' });
+  });
+
+  /* Law 19: api/power-plants owns the ~12MB read, the parse and the cache. This
+     fetcher must go through it rather than opening a second connection to the
+     publisher, exactly as the flights fetcher goes through api/flights. */
+  it('reads this app own route, not the publisher directly', async () => {
+    const spy = vi.fn(async (_url: string, _init: RequestInit) =>
+      ({ ok: true, status: 200, json: async () => ({ plants: [] }) }));
+    vi.stubGlobal('fetch', spy);
+    await run();
+
+    expect(String(spy.mock.calls[0][0])).toContain('/api/power-plants');
+    expect(String(spy.mock.calls[0][0])).not.toContain('githubusercontent');
+  });
+
+  it('skips a row with no usable position', async () => {
+    respondWith({ plants: [{ ...PLANT, id: 'ghost', lat: null }, PLANT] });
+    expect((await run()).map(i => i.id)).toEqual(['WRI1000001']);
+  });
+
+  it('throws rather than caching a failed route as zero plants', async () => {
+    respondWith({}, false);
+    await expect(run()).rejects.toThrow(/503/);
+  });
+
+  /* registry.ts:71-76: a fetcher MUST pass the signal through, or a timeout
+     only stops the scheduler waiting while the request runs on and collides
+     with the next tick. */
+  it('passes the abort signal to the request', async () => {
+    const spy = vi.fn(async (_url: string, _init: RequestInit) =>
+      ({ ok: true, status: 200, json: async () => ({ plants: [] }) }));
+    vi.stubGlobal('fetch', spy);
+
+    const controller = new AbortController();
+    await earthLayer('power_plants')!.fetch(controller.signal);
+
+    expect(spy.mock.calls[0][1]?.signal).toBe(controller.signal);
+  });
+});
 
 const fixture = (over: Partial<EarthLayer> = {}): EarthLayer => ({
   id: 'earthquakes',
@@ -33,6 +104,26 @@ describe('the real registry', () => {
 
   it('pre-warms only layers it actually registered', () => {
     for (const id of PRE_WARM) expect(earthLayer(id)).toBeDefined();
+  });
+
+  /**
+   * The scheduler arms a layer with setInterval and nothing else, so a layer
+   * outside PRE_WARM first fetches one FULL INTERVAL after arming. Any layer
+   * whose cadence is longer than a working session would therefore answer
+   * never_fetched for the whole of that session — truthfully, about a layer
+   * that is in practice permanently cold. Pre-warming is the only way such a
+   * layer ever becomes warm, so it is a requirement and not a nicety.
+   */
+  it('pre-warms every layer whose interval is longer than a working day could wait', () => {
+    const SESSION_MS = 4 * 60 * 60_000;
+    const slowAndCold = EARTH_LAYERS
+      .filter(l => l.intervalMs > SESSION_MS && !PRE_WARM.includes(l.id))
+      .map(l => l.id);
+
+    expect(
+      slowAndCold,
+      `these would answer never_fetched for a whole session: ${slowAndCold.join(', ')}`,
+    ).toEqual([]);
   });
 
   it('reaches its own routes by IP, because localhost DNS is unreliable on the rig', () => {

@@ -129,6 +129,34 @@ export function measure(mode: DrawMode, points: number[][]): DrawProgress {
   };
 }
 
+/**
+ * Turn a mode and the points that define it into a finished DrawResult, or
+ * undefined when there are not enough points for that mode.
+ *
+ * THE ONE PLACE THAT STEP HAPPENS. It was inlined in the reducer's `complete`
+ * until the control door grew a draw verb, and a second caller building its own
+ * result would have got two of these subtly wrong: a circle is defined by
+ * centre + rim but STORED as a 64-vertex ring with its radius in meta, and a
+ * rectangle by two corners but stored as a closed five-vertex ring. A caller
+ * that skipped buildGeometry would put a two-point "polygon" on the map.
+ *
+ * So a brain-sent shape and a mouse-drawn one take the same path and cannot
+ * disagree — which is the only reason the renderer, the contents sweep, the
+ * export and the tripwires need no idea which one drew it.
+ */
+export function toDrawResult(mode: DrawMode, points: number[][]): DrawResult | undefined {
+  if (points.length < minPoints(mode)) return undefined;
+  const coords = buildGeometry(mode, points);
+  const meta =
+    mode === 'circle'
+      ? {
+          center: points[0] as LngLat,
+          radiusKm: haversine(points[0] as LngLat, points[points.length - 1] as LngLat),
+        }
+      : undefined;
+  return { kind: mode, coords, meta };
+}
+
 /** Promote a finished draw into a stored shape. */
 export function toShape(result: DrawResult, existing: { color: string }[], index: number): DrawnShape {
   const isLine = result.kind === 'line';
@@ -205,16 +233,7 @@ export function initialDrawState(mode: DrawMode): DrawState {
 
 /** Build the finished result for the points collected so far, if it is valid. */
 function complete(state: DrawState): DrawResult | undefined {
-  if (state.points.length < minPoints(state.mode)) return undefined;
-  const coords = buildGeometry(state.mode, state.points);
-  const meta =
-    state.mode === 'circle'
-      ? {
-          center: state.points[0] as LngLat,
-          radiusKm: haversine(state.points[0] as LngLat, state.points[state.points.length - 1] as LngLat),
-        }
-      : undefined;
-  return { kind: state.mode, coords, meta };
+  return toDrawResult(state.mode, state.points);
 }
 
 export function drawReducer(state: DrawState, action: DrawAction): DrawTransition {

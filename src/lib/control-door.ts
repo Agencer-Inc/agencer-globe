@@ -2,16 +2,27 @@
  * OSIRIS — the remote-control door.
  *
  * A parent web app drives this globe without a reload by posting messages at
- * the window. Four verbs: set layers, fly to a coordinate, set the projection,
- * open a camera. Every accepted verb answers with an ack naming what changed;
- * every rejected one answers with a refusal named in words.
+ * the window. Six verbs: set layers, fly to a coordinate, set the projection,
+ * open a camera, draw a shape, clear the shapes. Every accepted verb answers
+ * with an ack naming what changed; every rejected one answers with a refusal
+ * named in words.
+ *
+ * EVERY VERB HERE PERFORMS. None of them answers a question, and an ack says
+ * what CHANGED rather than what is there — so "how far is that?" and "what is
+ * inside this?" belong to the earth server's doors (api/earth/measure,
+ * api/earth/query) and not to a fifth and sixth verb here. Control performs,
+ * query knows; a verb that did both would make the two inseparable.
  *
  * The door is shut unless BOTH hold:
  *   1. the page URL carries the control flag  (?control=1)
  *   2. the sender's origin is on the allowlist (NEXT_PUBLIC_CONTROL_ORIGINS)
  *
  * Nothing here touches React or the DOM except installControlDoor, and nothing
- * here imports from next/server or node:*. The module is isomorphic on purpose:
+ * here imports from next/server or node:*. Its only imports are geo.ts and
+ * draw.ts, which are pure and import nothing beyond each other — so the draw
+ * verb validates against draw.ts's OWN minimums rather than a second copy of
+ * them, without dragging a server into the client bundle.
+ * The module is isomorphic on purpose:
  * next.config.ts reads the same allowlist to build the CSP frame-ancestors
  * header, so the browser's framing policy and this origin check are always the
  * same list.
@@ -32,6 +43,9 @@
  *
  * @see LayerPanel.tsx for the layer vocabulary this validates against.
  */
+
+import { lngLatProblems } from './geo';
+import { minPoints, type DrawMode } from './draw';
 
 /** URL query flag that arms the door. Absent -> no listener is ever installed. */
 export const CONTROL_FLAG = 'control';
@@ -68,7 +82,24 @@ export const LAYER_REQUIREMENTS: Readonly<Record<string, string>> = {
 
 export type Projection = 'globe' | 'mercator';
 
-export type ControlVerb = 'set_layers' | 'fly_to' | 'set_projection' | 'open_camera';
+export type ControlVerb =
+  | 'set_layers'
+  | 'fly_to'
+  | 'set_projection'
+  | 'open_camera'
+  | 'draw_shape'
+  | 'clear_shapes';
+
+/**
+ * The most vertices one shape may carry.
+ *
+ * MAX_QUEUE bounds how MANY verbs may wait; nothing bounded how big ONE of them
+ * could be. Every drawn shape becomes its own maplibre source plus a fill, a
+ * line and a label layer (OsirisMap.tsx:2408 onward), so an unbounded ring is
+ * an unbounded render and not merely a long array. A circle drawn by hand is 64
+ * vertices (geo.ts:129); this is generous against that by design.
+ */
+export const MAX_SHAPE_POINTS = 512;
 
 export type RefusalReason =
   | 'origin_not_allowed'
@@ -81,6 +112,7 @@ export type RefusalReason =
   | 'invalid_projection'
   | 'unknown_camera'
   | 'camera_catalogue_not_ready'
+  | 'invalid_geometry'
   | 'queue_overflow';
 
 export type Ack =
@@ -106,7 +138,16 @@ export type Command =
   | { verb: 'set_layers'; on: string[]; off: string[] }
   | { verb: 'fly_to'; lat: number; lng: number; zoom?: number }
   | { verb: 'set_projection'; projection: Projection; clearTerrain: boolean }
-  | { verb: 'open_camera'; cameraId: string };
+  | { verb: 'open_camera'; cameraId: string }
+  /**
+   * The SAME shape a human draw produces: a DrawResult in all but name, handed
+   * to toShape() by the React side exactly as onDrawComplete's is. A
+   * brain-drawn shape and a hand-drawn one are then indistinguishable
+   * downstream — to the renderer, the contents sweep, the export and the
+   * tripwires alike — because there is only one path.
+   */
+  | { verb: 'draw_shape'; kind: DrawMode; coords: number[][]; name: string | null }
+  | { verb: 'clear_shapes' };
 
 /** The live state planVerb needs to decide. Read at call time, never closed over. */
 export interface DoorContext {
@@ -132,13 +173,30 @@ export type Decision =
  * True when the page URL carries the control flag.
  *
  * PRESENCE, not truthiness. This used to treat `?control=0` and `?control=false`
- * as shut, which half-armed the system: next.config.ts matches the flag with
- * Next's `has: [{ type: 'query' }]`, which can only test that a parameter is
- * PRESENT. So `?control=0` opened the framing exception while leaving the
- * listener uninstalled — the header policy and the door disagreeing about what
- * armed means. One rule, testable the same way in both places, beats a
- * friendlier-looking flag (Law 32: flags flipped together must fail the same
- * way, or they half-arm).
+ * as shut, which half-armed the system: `?control=0` opened the framing
+ * exception while leaving the listener uninstalled — the header policy and the
+ * door disagreeing about what armed means. One rule, testable the same way in
+ * both places, beats a friendlier-looking flag (Law 32).
+ *
+ * BUT THE TWO HALVES ARE STILL NOT THE SAME TEST, and an earlier version of
+ * this comment claimed they were. It said next.config.ts's
+ * `has: [{ type: 'query' }]` "can only test that a parameter is PRESENT".
+ * Measured against Next 16's matcher, that is FALSE:
+ *
+ *     if (!hasItem.value && value) { ... return true }
+ *     else if (value) { ...regex... }
+ *
+ * BOTH branches require the value to be TRUTHY, so `?control=` — present, empty
+ * — matches NEITHER, falls to the `missing` rule, collects
+ * X-Frame-Options: SAMEORIGIN, and the browser refuses the frame before a line
+ * of this file runs. That is exactly what happened on the rig: the consumer
+ * appended the flag with an empty value, every check on both sides believed
+ * itself satisfied, and the pane sat dead.
+ *
+ * So the rule that actually holds: THIS DOOR arms on presence, and the HEADERS
+ * need a truthy value. A caller must send a non-empty one (`?control=1`) to
+ * satisfy both. A claim about another file's behaviour is a claim about code,
+ * and this one was wrong.
  */
 export function isDoorOpen(search: string): boolean {
   return new URLSearchParams(search).has(CONTROL_FLAG);
@@ -194,7 +252,54 @@ function refusal(
   return { v: PROTOCOL, ok: false, id, verb, refused, detail };
 }
 
-const VERBS: readonly string[] = ['set_layers', 'fly_to', 'set_projection', 'open_camera'];
+const VERBS: readonly string[] = [
+  'set_layers', 'fly_to', 'set_projection', 'open_camera', 'draw_shape', 'clear_shapes',
+];
+
+const DRAW_MODES: readonly DrawMode[] = ['polygon', 'rectangle', 'circle', 'line'];
+
+const isDrawMode = (value: unknown): value is DrawMode =>
+  typeof value === 'string' && (DRAW_MODES as readonly string[]).includes(value);
+
+/**
+ * The rules a geometry from the wire must obey, returned in words.
+ *
+ * Words rather than a boolean, and pinned against shapes built to break each
+ * rule, for the same reason bboxProblems (places.ts:136-143) and
+ * registryProblems (registry.ts:243-249) are: a caller told only "invalid"
+ * cannot fix anything, and a validator nobody proved rejects anything is a
+ * validator that passes everything.
+ *
+ * The per-mode minimums are draw.ts's OWN (minPoints), read rather than
+ * retyped. A polygon needs three points to enclose anything and a line needs
+ * two to go anywhere; a door that accepted fewer would hand the map a shape the
+ * hand-drawn path could never produce, and the two would stop being one path.
+ */
+export function shapeProblems(kind: unknown, coords: unknown): string[] {
+  if (!isDrawMode(kind)) {
+    return [`kind must be one of ${DRAW_MODES.join(', ')}, got ${String(kind)}`];
+  }
+  if (!Array.isArray(coords)) {
+    return ['coords must be an array of [lng, lat] pairs'];
+  }
+
+  const least = minPoints(kind);
+  if (coords.length < least) {
+    return [`a ${kind} needs at least ${least} points, got ${coords.length}`];
+  }
+  if (coords.length > MAX_SHAPE_POINTS) {
+    return [`shape has ${coords.length} points, more than the ${MAX_SHAPE_POINTS} this door draws`];
+  }
+
+  const problems: string[] = [];
+  for (let i = 0; i < coords.length; i++) {
+    // geo.ts owns the per-point rules; the measuring door asks the same
+    // question of its path, and one rule with two copies is one rule that
+    // drifts. It names the vertex, so a long ring says which one was wrong.
+    problems.push(...lngLatProblems(coords[i], `vertex ${i}`));
+  }
+  return problems;
+}
 
 const isVerb = (value: string): value is ControlVerb => VERBS.includes(value);
 
@@ -377,6 +482,55 @@ export function planVerb(raw: unknown, trusted: boolean, ctx: DoorContext): Deci
         outcome: 'apply',
         command: { verb: name, cameraId },
         ack: { v: PROTOCOL, ok: true, id, verb: name, changed: { cameraId } },
+      };
+    }
+
+    case 'draw_shape': {
+      const problems = shapeProblems(message.kind, message.coords);
+      if (problems.length) {
+        return {
+          outcome: 'refuse',
+          ack: refusal(id, name, 'invalid_geometry', problems.join('; ')),
+          deliverAck: true,
+        };
+      }
+      // A name that is not a string is refused rather than coerced. String(42)
+      // would put "42" on the map and ack it `ok`, which is the same class of
+      // quiet success set_layers had to be fixed for (:255-257).
+      if (message.name !== undefined && typeof message.name !== 'string') {
+        return {
+          outcome: 'refuse',
+          ack: refusal(id, name, 'malformed', `name must be a string, got ${typeof message.name}`),
+          deliverAck: true,
+        };
+      }
+
+      const kind = message.kind as DrawMode;
+      const coords = message.coords as number[][];
+      const shapeName = typeof message.name === 'string' ? message.name : null;
+
+      return {
+        outcome: 'apply',
+        command: { verb: name, kind, coords, name: shapeName },
+        // What CHANGED, and nothing about what is inside the shape. Answering
+        // "what is in here" is the query door's job; an ack that carried
+        // contents would make the two doors inseparable.
+        ack: {
+          v: PROTOCOL, ok: true, id, verb: name,
+          changed: { kind, points: coords.length, name: shapeName },
+        },
+      };
+    }
+
+    case 'clear_shapes': {
+      // Takes no argument. Clearing ONE shape would need the door to know the
+      // ids the React side generates, which is a DoorContext it does not have
+      // and a fact this verb would then be able to report — so it is a separate
+      // row, not a quiet option on this one.
+      return {
+        outcome: 'apply',
+        command: { verb: name },
+        ack: { v: PROTOCOL, ok: true, id, verb: name, changed: { cleared: 'all' } },
       };
     }
   }

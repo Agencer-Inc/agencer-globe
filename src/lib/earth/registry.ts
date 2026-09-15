@@ -31,6 +31,7 @@
 
 import { osirisLayer, OSIRIS_LAYERS } from '@/lib/layers-catalog';
 import { httpJson } from '@/lib/httpJson';
+import type { PowerPlant } from '@/lib/power-plants';
 
 /**
  * One thing on the earth, flattened to what a bounded query needs.
@@ -140,6 +141,10 @@ interface FlightRow {
   airline_code?: string;
   category?: string;
   grounded?: boolean;
+  heading?: number;
+  registration?: string;
+  squawk?: string;
+  aircraft_category?: string;
 }
 
 /**
@@ -176,6 +181,83 @@ async function fetchFlights(signal: AbortSignal): Promise<EarthItem[]> {
         // null, not false. An absent field means the upstream did not say, and
         // `false` would assert "observed airborne" on no evidence.
         grounded: f.grounded ?? null,
+        // Everything else /api/flights already returns, carried so the
+        // structured filter has real fields to ask about. Each is null when
+        // absent rather than defaulted, for the reason `grounded` is.
+        heading: typeof f.heading === 'number' ? f.heading : null,
+        registration: f.registration || null,
+        squawk: f.squawk || null,
+        aircraftCategory: f.aircraft_category || null,
+        category: f.category || null,
+        airlineCode: f.airline_code || null,
+        /**
+         * THERE IS NO DESTINATION HERE, AND THERE CANNOT BE.
+         *
+         * "All inbound flights to the United States" was named as a worked
+         * example, and it is not answerable from this feed at any level of
+         * filter cleverness: ADS-B broadcasts position, altitude, track and
+         * identity, and NOT origin, destination or flight phase. Those live in
+         * flight plans and airline schedules, which is a different upstream
+         * with a different licence and its own row.
+         *
+         * `heading` is what this feed does carry, and a caller can compose a
+         * bearing window with a bbox to ask a question it can actually answer —
+         * but it must know that is a proxy and not a destination. Recorded here
+         * so the next person does not go looking for a field that never
+         * existed.
+         */
+      },
+    });
+  }
+  return items;
+}
+
+/**
+ * Power stations, via this app's OWN /api/power-plants route.
+ *
+ * THE LICENCE FOR THIS DATA HAS NOT BEEN READ. The catalogue row says so in its
+ * own licence field, and the query door carries that sentence verbatim onto
+ * every answer, so nobody consuming this layer can miss it. Reading the terms is
+ * 313-24 and it has not happened; this exists so the shape of the thing can be
+ * seen working first.
+ *
+ * That route is the single owner of the upstream (Law 19): it holds the ~12MB
+ * CSV read, the parse and the day-long cache, none of which should exist twice.
+ * This fetcher therefore takes the route's answer and keeps only the
+ * query-shaped projection of it — the same relationship fetchFlights has with
+ * api/flights.
+ *
+ * A RELEASE, NOT A FEED. The published database is a versioned file of ~35,000
+ * rows. It is read once a day, far more often than it changes, because a long
+ * interval satisfies every rule registryProblems already enforces where a
+ * `static` layer kind would have earned a second code path through the
+ * scheduler for exactly one row.
+ */
+async function fetchPowerPlants(signal: AbortSignal): Promise<EarthItem[]> {
+  const res = await fetch(`${selfOrigin()}/api/power-plants`, {
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!res.ok) throw new Error(`/api/power-plants answered ${res.status}`);
+
+  const data = (await res.json()) as { plants?: PowerPlant[] };
+  const items: EarthItem[] = [];
+  for (const plant of data.plants ?? []) {
+    if (typeof plant?.lat !== 'number' || typeof plant?.lng !== 'number') continue;
+    items.push({
+      id: plant.id,
+      lat: plant.lat,
+      lng: plant.lng,
+      label: plant.name,
+      // The sub-kind `filter` matches on, so "the coal stations in Poland" is a
+      // question this door can already answer.
+      kind: plant.fuel,
+      props: {
+        capacityMw: plant.capacityMw,
+        country: plant.country,
+        fuel: plant.fuel,
+        owner: plant.owner,
+        commissioningYear: plant.commissioningYear,
       },
     });
   }
@@ -208,6 +290,20 @@ export const EARTH_LAYERS: readonly EarthLayer[] = [
     timeoutMs: 30_000,
     fetch: fetchEarthquakes,
   },
+  {
+    id: 'power_plants',
+    // Row cadence: "The published database is a versioned release, not a feed.
+    // This server re-reads it once a day, which is far more often than it
+    // changes." A day is the honest number: the data moves on a release
+    // schedule measured in months.
+    intervalMs: 24 * 60 * 60_000,
+    ttlMs: 24 * 60 * 60_000,
+    // Generous against 12MB over a public CDN, and still four orders of
+    // magnitude under the interval, so a slow read can never collide with the
+    // next tick.
+    timeoutMs: 120_000,
+    fetch: fetchPowerPlants,
+  },
 ];
 
 /**
@@ -219,8 +315,19 @@ export const EARTH_LAYERS: readonly EarthLayer[] = [
  * layer was already warm when the question arrived. `earthquakes` warms with
  * it so the ride can show a second layer answering from cache rather than one
  * layer that might be a fluke.
+ *
+ * `power_plants` IS HERE OUT OF NECESSITY, NOT TO MAKE A DEMO FASTER, and the
+ * difference matters. The scheduler arms a layer with
+ * `setInterval(tick, intervalMs)` and nothing else, so a layer outside this set
+ * first fetches ONE FULL INTERVAL after arming. This one's interval is a DAY,
+ * which means it would answer `never_fetched` for twenty-four hours and no
+ * session short of that could ever see it warm — the query door would be
+ * telling the truth about a layer that was, in practice, permanently cold.
+ *
+ * A layer whose cadence is longer than a working session has no other way to
+ * become warm. The cost is one ~12MB read at arming, cached for a day.
  */
-export const PRE_WARM: readonly string[] = ['flights', 'earthquakes'];
+export const PRE_WARM: readonly string[] = ['flights', 'earthquakes', 'power_plants'];
 
 const BY_ID: ReadonlyMap<string, EarthLayer> = new Map(EARTH_LAYERS.map(l => [l.id, l]));
 

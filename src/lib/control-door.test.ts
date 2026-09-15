@@ -10,6 +10,7 @@ import {
   ControlQueue,
   DEFAULT_ALLOWED_ORIGINS,
   MAX_QUEUE,
+  MAX_SHAPE_POINTS,
   PROTOCOL,
   type Command,
   type DoorContext,
@@ -18,6 +19,7 @@ import {
   isOriginAllowed,
   parseAllowedOrigins,
   planVerb,
+  shapeProblems,
 } from './control-door';
 
 const PARENT = 'https://app.example.test';
@@ -415,5 +417,192 @@ describe('end to end through a real window', () => {
     window.dispatchEvent(live);
     await flush();
     expect(apply).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The geometry validator, pinned against shapes built to break each rule, for
+ * the same reason bboxProblems and registryProblems are: a validator nobody
+ * proved rejects anything is a validator that passes everything (Law 31).
+ */
+describe('shapeProblems names what is wrong with a geometry, in words', () => {
+  const TRIANGLE = [[0, 0], [1, 0], [1, 1]];
+
+  it('accepts each mode at its own minimum', () => {
+    expect(shapeProblems('polygon', TRIANGLE)).toEqual([]);
+    expect(shapeProblems('line', [[0, 0], [1, 1]])).toEqual([]);
+    expect(shapeProblems('rectangle', [[0, 0], [1, 1]])).toEqual([]);
+    expect(shapeProblems('circle', [[0, 0], [1, 1]])).toEqual([]);
+  });
+
+  it('rejects a mode this app cannot draw', () => {
+    expect(shapeProblems('hexagon', TRIANGLE)).not.toEqual([]);
+    expect(shapeProblems('', TRIANGLE)).not.toEqual([]);
+  });
+
+  /* The minimums are draw.ts's own (minPoints), not a second copy: a polygon
+     needs three points to enclose anything and a line needs two to go
+     anywhere. A door that accepted fewer would hand the map a shape the
+     human-drawn path could never have produced. */
+  it('rejects a shape with too few points for its mode, and says the minimum', () => {
+    expect(shapeProblems('polygon', [[0, 0], [1, 0]]).join(' ')).toMatch(/3/);
+    expect(shapeProblems('line', [[0, 0]]).join(' ')).toMatch(/2/);
+  });
+
+  it('rejects coords that are not an array at all', () => {
+    for (const bad of [null, undefined, 42, 'x', {}]) {
+      expect(shapeProblems('polygon', bad), String(bad)).not.toEqual([]);
+    }
+  });
+
+  it('names the vertex that was wrong, not just that one was', () => {
+    expect(shapeProblems('polygon', [[0, 0], [1, 0], [999, 0]]).join(' ')).toMatch(/vertex 2/);
+    expect(shapeProblems('polygon', [[0, 0], [1, 0], [0, 91]]).join(' ')).toMatch(/vertex 2/);
+  });
+
+  it('says out loud when a vertex looks like a swapped pair', () => {
+    expect(shapeProblems('line', [[0, 0], [22.5, 114.05]]).join(' ')).toMatch(/swapped/);
+  });
+
+  /* MAX_QUEUE bounds how MANY verbs may wait; nothing bounded how big ONE of
+     them could be. A ring is rendered as its own maplibre source and layer
+     per shape (OsirisMap.tsx:2408), so an unbounded one is an unbounded
+     render, not merely an unbounded array. */
+  it('rejects a shape past the vertex cap', () => {
+    const atCap = Array.from({ length: MAX_SHAPE_POINTS }, (_, i) => [i % 180, 0]);
+    expect(shapeProblems('polygon', atCap)).toEqual([]);
+    expect(shapeProblems('polygon', [...atCap, [0, 0]])).not.toEqual([]);
+  });
+});
+
+describe('draw_shape puts a shape on the map', () => {
+  it('applies a well-formed polygon and acks what changed', () => {
+    const got = planVerb(
+      msg({ verb: 'draw_shape', kind: 'polygon', coords: [[0, 0], [1, 0], [1, 1]] }),
+      true,
+      ctx(),
+    );
+
+    expect(got.outcome).toBe('apply');
+    if (got.outcome !== 'apply') return;
+    expect(got.command).toEqual({
+      verb: 'draw_shape',
+      kind: 'polygon',
+      coords: [[0, 0], [1, 0], [1, 1]],
+      name: null,
+    });
+    expect(got.ack.ok).toBe(true);
+  });
+
+  it('carries a name through when one is given', () => {
+    const got = planVerb(
+      msg({ verb: 'draw_shape', kind: 'line', coords: [[0, 0], [1, 1]], name: 'HK to the mainland' }),
+      true,
+      ctx(),
+    );
+    expect(got.outcome).toBe('apply');
+    if (got.outcome === 'apply' && got.command.verb === 'draw_shape') {
+      expect(got.command.name).toBe('HK to the mainland');
+    }
+  });
+
+  it('refuses a non-string name rather than stringifying it', () => {
+    const got = planVerb(
+      msg({ verb: 'draw_shape', kind: 'line', coords: [[0, 0], [1, 1]], name: 42 }),
+      true,
+      ctx(),
+    );
+    expect(got.outcome).toBe('refuse');
+    if (got.outcome === 'refuse' && !got.ack.ok) expect(got.ack.refused).toBe('malformed');
+  });
+
+  it('refuses a bad geometry BY NAME and carries the problems as the detail', () => {
+    const got = planVerb(
+      msg({ verb: 'draw_shape', kind: 'polygon', coords: [[0, 0], [1, 0]] }),
+      true,
+      ctx(),
+    );
+
+    expect(got.outcome).toBe('refuse');
+    if (got.outcome !== 'refuse' || got.ack.ok) return;
+    expect(got.ack.refused).toBe('invalid_geometry');
+    expect(got.ack.detail.length).toBeGreaterThan(0);
+    expect(got.ack.verb).toBe('draw_shape');
+  });
+
+  /**
+   * The ack says what CHANGED, never what is inside the shape. Answering "what
+   * is in here" is the query door's job, and a control ack that carried
+   * contents would make the two doors inseparable — the one thing §7 of the
+   * black box freezes hardest.
+   */
+  it('acks what changed and nothing about what is inside it', () => {
+    const got = planVerb(
+      msg({ verb: 'draw_shape', kind: 'polygon', coords: [[0, 0], [1, 0], [1, 1]] }),
+      true,
+      ctx(),
+    );
+    if (got.outcome !== 'apply' || !got.ack.ok) throw new Error('expected an applied verb');
+
+    expect(got.ack.changed).toEqual({ kind: 'polygon', points: 3, name: null });
+    expect(JSON.stringify(got.ack.changed)).not.toMatch(/count|items|contents|inside|total/);
+  });
+});
+
+describe('clear_shapes takes them all off again', () => {
+  it('applies with no argument at all', () => {
+    const got = planVerb(msg({ verb: 'clear_shapes' }), true, ctx());
+    expect(got.outcome).toBe('apply');
+    if (got.outcome === 'apply') expect(got.command).toEqual({ verb: 'clear_shapes' });
+  });
+
+  it('acks that it cleared', () => {
+    const got = planVerb(msg({ verb: 'clear_shapes' }), true, ctx());
+    if (got.outcome !== 'apply' || !got.ack.ok) throw new Error('expected an applied verb');
+    expect(got.ack.changed).toEqual({ cleared: 'all' });
+  });
+});
+
+describe('the new verbs obey the door the old ones do', () => {
+  it('are refused from a stranger, and never acked', () => {
+    for (const verb of ['draw_shape', 'clear_shapes']) {
+      const got = planVerb(msg({ verb, kind: 'line', coords: [[0, 0], [1, 1]] }), false, ctx());
+      expect(got.outcome, verb).toBe('refuse');
+      if (got.outcome === 'refuse') {
+        expect(got.deliverAck, verb).toBe(false);
+        if (!got.ack.ok) expect(got.ack.refused).toBe('origin_not_allowed');
+      }
+    }
+  });
+
+  it('are refused on a protocol mismatch', () => {
+    const got = planVerb({ v: 99, id: 'r1', verb: 'clear_shapes' }, true, ctx());
+    expect(got.outcome).toBe('refuse');
+    if (got.outcome === 'refuse' && !got.ack.ok) expect(got.ack.refused).toBe('bad_protocol');
+  });
+
+  /**
+   * fly_to coalesces because a fly is a 2000ms animation and only the newest
+   * target was ever wanted (control-door.ts:385-389). Two shapes are two
+   * shapes: coalescing them would silently drop one the caller asked for and
+   * was already acked `ok`.
+   */
+  it('does NOT coalesce draw_shape the way fly_to does', () => {
+    const queue = new ControlQueue();
+    const first: Command = { verb: 'draw_shape', kind: 'line', coords: [[0, 0], [1, 1]], name: null };
+    const second: Command = { verb: 'draw_shape', kind: 'line', coords: [[2, 2], [3, 3]], name: null };
+
+    expect(queue.push(first)).toBe(true);
+    expect(queue.push(second)).toBe(true);
+    expect(queue.size).toBe(2);
+    expect(queue.drain()).toEqual([first, second]);
+  });
+
+  it('still refuses past the queue cap rather than dropping silently', () => {
+    const queue = new ControlQueue();
+    for (let i = 0; i < MAX_QUEUE; i++) {
+      expect(queue.push({ verb: 'clear_shapes' })).toBe(true);
+    }
+    expect(queue.push({ verb: 'clear_shapes' })).toBe(false);
   });
 });

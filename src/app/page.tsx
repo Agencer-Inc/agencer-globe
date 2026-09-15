@@ -7,7 +7,7 @@ import { Layers, BarChart3, Newspaper, Search, X, Globe, MapPinned, Route, Radar
 import { type TerrainStatus } from '@/lib/map-terrain';
 import { loadCameraCatalog, mergeCameraCatalog } from '@/lib/camera-catalog';
 import { installControlDoor, parseAllowedOrigins, type Command as ControlCommand } from '@/lib/control-door';
-import { DEFAULT_ACTIVE_LAYERS } from '@/lib/layers-catalog';
+import { DEFAULT_ACTIVE_LAYERS, genericLayers } from '@/lib/layers-catalog';
 import IntelFeed from '@/components/IntelFeed';
 import MarketsPanel from '@/components/MarketsPanel';
 import ScmPanel from '@/components/ScmPanel';
@@ -37,7 +37,7 @@ const DrawHud = dynamic(() => import('@/components/DrawHud'), { ssr: false });
 // The measurement helpers are pure functions — importing them directly keeps
 // them out of the lazy chunk, so a finished polygon can be measured whether or
 // not the toolbar has loaded yet.
-import { toShape, queryRing, type DrawMode, type DrawnShape, type DrawProgress, type DrawResult } from '@/lib/draw';
+import { toShape, toDrawResult, queryRing, type DrawMode, type DrawnShape, type DrawProgress, type DrawResult } from '@/lib/draw';
 import { selectInPolygon } from '@/lib/aoi';
 import { diffSweep, appendEvents, type WatchBaseline, type WatchEvent } from '@/lib/watch';
 import { STORAGE_KEY, serializeShapes, deserializeShapes, shapesToGeoJSON, downloadFile } from '@/lib/aoi-export';
@@ -447,6 +447,29 @@ export default function Dashboard() {
             }
             setMapProjection(command.projection);
             break;
+          case 'draw_shape': {
+            /* toDrawResult, then toShape — the same two steps handleDrawComplete
+               takes (:608). A shape sent by the brain is therefore the same
+               object a hand would have produced, so the renderer, the contents
+               sweep, the export and the tripwires need no idea which drew it.
+               The door has already validated the geometry; undefined here would
+               mean the two disagreed about the minimums, so it is dropped
+               rather than guessed at. */
+            const result = toDrawResult(command.kind, command.coords);
+            if (!result) return;
+            setDrawnPolygons(prev => {
+              const shape = toShape(result, prev, prev.length);
+              return [command.name ? { ...shape, name: command.name } : shape, ...prev];
+            });
+            break;
+          }
+          case 'clear_shapes':
+            /* Matches the toolbar's own Clear All (:1930), which also drops the
+               selection: a selected shape that no longer exists leaves the
+               panel describing something the map is not showing. */
+            setDrawnPolygons([]);
+            setSelectedPolygon(null);
+            break;
           case 'open_camera': {
             const cameras = dataRef.current?.cameras as Array<{ id: string | number }> | undefined;
             const camera = cameras?.find(c => String(c.id) === command.cameraId) as
@@ -731,6 +754,19 @@ export default function Dashboard() {
       // marker's epoch to draw a track that still passes through it.
       fetchEndpoint('/api/satellites', d => ({ ...d, satellites_at: d.timestamp }));
       layerFetchedRef.current.add('satellites');
+    }
+    /* ── THE GENERIC PATH ──
+       Every catalogue row carrying a route and a paint spec fetches here, with
+       no branch of its own. This loop replaces the per-layer `if` below for any
+       layer that opts in; the hand-written branches stay until each is migrated
+       deliberately, and layers-catalog's PAINT_EXEMPT names every one that has
+       not been, with its reason. */
+    for (const row of genericLayers()) {
+      if (activeLayers[row.id] && !layerFetchedRef.current.has(row.id)) {
+        const { dataKey, rowsKey } = row.paint;
+        fetchEndpoint(row.appRoute, (d: Record<string, unknown>) => ({ [dataKey]: d[rowsKey] }));
+        layerFetchedRef.current.add(row.id);
+      }
     }
     // Fires
     if (activeLayers.fires && !layerFetchedRef.current.has('fires')) {

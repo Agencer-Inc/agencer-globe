@@ -1,4 +1,40 @@
 import { describe, it, expect } from 'vitest';
+import { toDrawResult } from './draw';
+
+/**
+ * The control door's draw verb and the mouse both go through toDrawResult, so
+ * these pin that a shape sent by the brain is the same object a hand would have
+ * produced. If they ever diverge, a circle from one path is a 64-vertex ring
+ * and from the other a two-point line, and everything downstream — the
+ * renderer, the sweep, the export — quietly disagrees about what is on the map.
+ */
+describe('toDrawResult is the one way points become a shape', () => {
+  it('expands a circle from centre and rim into a real ring, keeping the radius', () => {
+    const got = toDrawResult('circle', [[0, 0], [1, 0]]);
+    expect(got?.kind).toBe('circle');
+    expect(got!.coords.length).toBeGreaterThan(3);
+    expect(got?.meta?.radiusKm).toBeCloseTo(111.19, 1);
+    expect(got?.meta?.center).toEqual([0, 0]);
+  });
+
+  it('expands a rectangle from two corners into a closed ring', () => {
+    const got = toDrawResult('rectangle', [[0, 0], [1, 1]]);
+    expect(got!.coords).toHaveLength(5);
+    expect(got!.coords[0]).toEqual(got!.coords[4]);
+  });
+
+  it('passes a polygon and a line through as given', () => {
+    expect(toDrawResult('polygon', [[0, 0], [1, 0], [1, 1]])!.coords).toHaveLength(3);
+    expect(toDrawResult('line', [[0, 0], [1, 1]])!.coords).toHaveLength(2);
+    expect(toDrawResult('line', [[0, 0], [1, 1]])!.meta).toBeUndefined();
+  });
+
+  it('refuses to build a shape with too few points for its mode', () => {
+    expect(toDrawResult('polygon', [[0, 0], [1, 0]])).toBeUndefined();
+    expect(toDrawResult('line', [[0, 0]])).toBeUndefined();
+    expect(toDrawResult('circle', [[0, 0]])).toBeUndefined();
+  });
+});
 import { buildGeometry, measure, minPoints, toShape, closeRing, queryRing, nextColor } from './draw';
 import { haversine, polygonArea, type LngLat } from './geo';
 

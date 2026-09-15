@@ -1,7 +1,8 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { jsonUtf8 } from '@/lib/json-utf8';
 import { planQuery, MAX_LIMIT } from '@/lib/earth/query';
-import { earthServerEnabled, EARTH_SERVER_FLAG } from '@/lib/earth/settings';
-import { allRecords, activeTimerCount } from '@/lib/earth/scheduler';
+import { earthServerEnabled, EARTH_SERVER_FLAG, USER_HEADER } from '@/lib/earth/settings';
+import { allRecords, activeTimerCount, lastArming } from '@/lib/earth/scheduler';
 import { unservedLiveLayers } from '@/lib/earth/registry';
 import { sdkLayerIds } from '@/lib/earth/sdk-layers';
 
@@ -10,7 +11,12 @@ import { sdkLayerIds } from '@/lib/earth/sdk-layers';
  *
  *   POST /api/earth/query
  *     headers: x-osiris-user: <id>          (or body.userId; the header wins)
- *     body:    { layer, place | bbox, filter?, limit? }
+ *     body:    { layer, place | bbox | ring, filter?, limit? }
+ *
+ * `ring` is a drawn shape, as [lng, lat] vertices — the return path for a shape
+ * the control door put on the globe. It answers with rows and their provenance,
+ * where a control ack only ever says what changed. Control performs, query
+ * knows, and this is the half that knows.
  *
  * Answers from what the scheduler already holds. It never fetches on the
  * request path, so a warm layer answers in the time it takes to filter an array
@@ -35,12 +41,18 @@ import { sdkLayerIds } from '@/lib/earth/sdk-layers';
  * server from outside without asking it for data (Law 32).
  */
 
-/** The header this door reads its caller from. No prior convention existed in
- *  this app, so this leg names one rather than leaving it implicit (Law 6). */
-export const USER_HEADER = 'x-osiris-user';
+/**
+ * The header this door reads its caller from. No prior convention existed in
+ * this app, so 313-23 named one rather than leaving it implicit (Law 6).
+ *
+ * It now lives in earth/settings.ts, because the measuring door reads the same
+ * header and one rule should not have two spellings. Re-exported here under the
+ * name this route already published, so no existing importer moved.
+ */
+export { USER_HEADER };
 
 function disabled() {
-  return NextResponse.json(
+  return jsonUtf8(
     {
       ok: false,
       refusal: 'disabled',
@@ -70,7 +82,7 @@ export async function POST(request: NextRequest) {
     // A body we cannot read is still no excuse for answering a stranger: name
     // the caller first, exactly as the readable path does.
     if (headerUser === null || headerUser.trim() === '') {
-      return NextResponse.json(
+      return jsonUtf8(
         {
           ok: false,
           refusal: 'anonymous',
@@ -80,7 +92,7 @@ export async function POST(request: NextRequest) {
         { status: 401 },
       );
     }
-    return NextResponse.json(
+    return jsonUtf8(
       {
         ok: false,
         refusal: 'malformed',
@@ -102,10 +114,10 @@ export async function POST(request: NextRequest) {
     const status = outcome.refusal === 'anonymous' ? 401
       : outcome.refusal === 'unknown_layer' ? 404
       : 400;
-    return NextResponse.json({ ...outcome, timestamp: new Date().toISOString() }, { status });
+    return jsonUtf8({ ...outcome, timestamp: new Date().toISOString() }, { status });
   }
 
-  return NextResponse.json(
+  return jsonUtf8(
     { ...outcome, timestamp: new Date().toISOString() },
     { headers: { 'Cache-Control': 'no-store' } },
   );
@@ -126,7 +138,7 @@ export async function GET(request: NextRequest) {
 
   const headerUser = request.headers.get(USER_HEADER);
   if (headerUser === null || headerUser.trim() === '') {
-    return NextResponse.json(
+    return jsonUtf8(
       {
         ok: false,
         refusal: 'anonymous',
@@ -142,11 +154,26 @@ export async function GET(request: NextRequest) {
   // input instead of its output: a server with the flag set and no scheduler
   // running reported itself armed. Found by the outside voice.
   const activeTimers = activeTimerCount();
+  const attempt = lastArming();
 
-  return NextResponse.json({
+  return jsonUtf8({
     ok: true,
     armed: activeTimers > 0,
     activeTimers,
+    /**
+     * WHETHER THE START-UP HOOK EVER RAN IN THE PROCESS SERVING THIS REQUEST.
+     *
+     * `armed: false` alone collapsed two different failures — the hook never
+     * ran, and the hook ran with the flag off — and a third that is worse than
+     * both: the hook ran in a DIFFERENT module instance and this door is
+     * reading an empty copy of the scheduler. That third one is what actually
+     * happened under Next 16 + Turbopack, and it cost a round trip to the
+     * server's stdout to identify, because nothing here could say it.
+     *
+     * false with the flag set means the wiring is wrong, not the switch.
+     */
+    hookRan: attempt !== null,
+    armReason: attempt?.reason ?? null,
     maxLimit: MAX_LIMIT,
     layers: allRecords().map(r => ({
       layer: r.layerId,

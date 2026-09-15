@@ -1,8 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   PLACES, resolvePlace, normalisePlace, inBbox, bboxProblems,
-  placesTableProblems, knownPlaces, type Bbox,
+  placesTableProblems, knownPlaces, rememberPlace, clearPlaceCache,
+  cachedPlaces, type Bbox,
 } from './places';
+
+afterEach(() => clearPlaceCache());
 
 describe('the place table', () => {
   it('every row is reachable, well-formed and says what it is drawn around', () => {
@@ -11,6 +14,77 @@ describe('the place table', () => {
 
   it('carries the demo set the ride needs', () => {
     expect(knownPlaces()).toEqual(['ankara', 'istanbul', 'japan', 'paris', 'tokyo']);
+  });
+});
+
+/**
+ * The resolve door (api/earth/resolve) is the only thing that reaches a
+ * geocoder, and it writes what a caller CONFIRMED into this cache. resolvePlace
+ * itself stays exactly what it was: an exact lookup that never guesses and
+ * never reaches the network. All that changed is the size of the table it
+ * looks in.
+ */
+describe('the resolved-place cache', () => {
+  const POLAND: Bbox = [14.122929, 49.002046, 24.1458933, 54.8357841];
+
+  it('refuses a place until something confirms it, then resolves it', () => {
+    expect(resolvePlace('poland').ok).toBe(false);
+
+    rememberPlace('Poland', { bbox: POLAND, note: 'Nominatim administrative boundary for Polska.' });
+
+    const got = resolvePlace('poland');
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.bbox).toEqual(POLAND);
+  });
+
+  it('normalises on the way in, so the key a lookup builds is the key that was written', () => {
+    rememberPlace('  The  Canary Islands ', { bbox: POLAND, note: 'n/a' });
+    expect(resolvePlace('the canary islands').ok).toBe(true);
+  });
+
+  /* A hand row was typed by a person reading a map and reviewed in a diff; a
+     cached one came from a fuzzy index. When both answer to a name, the one a
+     human wrote wins, or an upstream could quietly move Paris. */
+  it('never lets a cached row shadow a hand-written one', () => {
+    rememberPlace('paris', { bbox: [0, 0, 1, 1], note: 'an upstream disagreeing about Paris' });
+
+    const got = resolvePlace('Paris');
+    expect(got.ok).toBe(true);
+    if (got.ok) expect(got.bbox).toEqual(PLACES.paris.bbox);
+  });
+
+  /* places.ts:93-100 found this once on the hand table: every key on
+     Object.prototype resolves through a bare index to something TRUTHY with no
+     bbox, so the caller reads ok:true, drops its geographic filter and returns
+     a whole layer for a query that named one city. A Map cannot reintroduce it,
+     and this pin is what says so. */
+  it('still misses on an inherited key, through the cache as well', () => {
+    for (const key of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      expect(resolvePlace(key).ok, key).toBe(false);
+    }
+  });
+
+  it('lists what it has learned, and forgets it on command', () => {
+    rememberPlace('Poland', { bbox: POLAND, note: 'n/a' });
+    expect(cachedPlaces()).toEqual(['poland']);
+    expect(knownPlaces()).toContain('poland');
+
+    clearPlaceCache();
+    expect(cachedPlaces()).toEqual([]);
+    expect(resolvePlace('poland').ok).toBe(false);
+  });
+
+  it('refuses to remember a box that is not one', () => {
+    expect(() => rememberPlace('nowhere', { bbox: [1, 2, 3] as unknown as Bbox, note: 'x' })).toThrow();
+    expect(resolvePlace('nowhere').ok).toBe(false);
+  });
+
+  /* A caller told only "unknown" cannot act. Told that a door exists which can
+     resolve the name, it can. */
+  it('points an unknown name at the door that can resolve it', () => {
+    const got = resolvePlace('gdansk');
+    expect(got.ok).toBe(false);
+    if (!got.ok) expect(got.detail).toMatch(/resolve/i);
   });
 });
 

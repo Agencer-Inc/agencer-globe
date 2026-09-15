@@ -30,6 +30,21 @@ const SNAPSHOT_VERSION = 1;
 export const snapshotPath = () =>
   process.env.OSIRIS_CCTV_SNAPSHOT || join(process.cwd(), '.cache', 'cctv-catalog.json');
 
+/**
+ * The 'off' sentinel: no disk at all, in either direction.
+ *
+ * Named here and asked by BOTH ends, because it used to be honoured by
+ * readSnapshot alone while writeSnapshot read the same variable as a path — so
+ * a suite that had switched snapshots off still wrote the whole catalogue to a
+ * file literally called `off` in the repo root, every run. The stray file was
+ * being swept up by hand as mess rather than read as the bug it was (the
+ * day-314 black box, §5.5).
+ *
+ * A switch kept by one half of a pair is worse than one kept by neither: it
+ * reads as isolation while the isolation is not there.
+ */
+export const snapshotsDisabled = () => process.env.OSIRIS_CCTV_SNAPSHOT === 'off';
+
 interface SnapshotFile {
   version: number;
   builtAt: number;
@@ -41,7 +56,7 @@ export async function readSnapshot(): Promise<SnapshotFile | null> {
   // 'off' keeps tests off the filesystem entirely: real disk I/O cannot be
   // flushed deterministically under fake timers, and these caches are module
   // state that leaks between cases if a read lands late.
-  if (process.env.OSIRIS_CCTV_SNAPSHOT === 'off') return null;
+  if (snapshotsDisabled()) return null;
   try {
     const raw = await readFile(snapshotPath(), 'utf8');
     const parsed = JSON.parse(raw) as SnapshotFile;
@@ -57,6 +72,9 @@ export async function readSnapshot(): Promise<SnapshotFile | null> {
  * half-written catalogue that the next boot would refuse to parse.
  */
 export async function writeSnapshot(regions: RegionCameras): Promise<void> {
+  // The same question readSnapshot asks, and asked BEFORE snapshotPath(), which
+  // would otherwise hand back the sentinel itself as a relative filename.
+  if (snapshotsDisabled()) return;
   const path = snapshotPath();
   const payload: SnapshotFile = { version: SNAPSHOT_VERSION, builtAt: Date.now(), regions };
   await mkdir(dirname(path), { recursive: true });
