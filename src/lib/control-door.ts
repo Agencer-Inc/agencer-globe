@@ -173,13 +173,30 @@ export type Decision =
  * True when the page URL carries the control flag.
  *
  * PRESENCE, not truthiness. This used to treat `?control=0` and `?control=false`
- * as shut, which half-armed the system: next.config.ts matches the flag with
- * Next's `has: [{ type: 'query' }]`, which can only test that a parameter is
- * PRESENT. So `?control=0` opened the framing exception while leaving the
- * listener uninstalled — the header policy and the door disagreeing about what
- * armed means. One rule, testable the same way in both places, beats a
- * friendlier-looking flag (Law 32: flags flipped together must fail the same
- * way, or they half-arm).
+ * as shut, which half-armed the system: `?control=0` opened the framing
+ * exception while leaving the listener uninstalled — the header policy and the
+ * door disagreeing about what armed means. One rule, testable the same way in
+ * both places, beats a friendlier-looking flag (Law 32).
+ *
+ * BUT THE TWO HALVES ARE STILL NOT THE SAME TEST, and an earlier version of
+ * this comment claimed they were. It said next.config.ts's
+ * `has: [{ type: 'query' }]` "can only test that a parameter is PRESENT".
+ * Measured against Next 16's matcher, that is FALSE:
+ *
+ *     if (!hasItem.value && value) { ... return true }
+ *     else if (value) { ...regex... }
+ *
+ * BOTH branches require the value to be TRUTHY, so `?control=` — present, empty
+ * — matches NEITHER, falls to the `missing` rule, collects
+ * X-Frame-Options: SAMEORIGIN, and the browser refuses the frame before a line
+ * of this file runs. That is exactly what happened on the rig: the consumer
+ * appended the flag with an empty value, every check on both sides believed
+ * itself satisfied, and the pane sat dead.
+ *
+ * So the rule that actually holds: THIS DOOR arms on presence, and the HEADERS
+ * need a truthy value. A caller must send a non-empty one (`?control=1`) to
+ * satisfy both. A claim about another file's behaviour is a claim about code,
+ * and this one was wrong.
  */
 export function isDoorOpen(search: string): boolean {
   return new URLSearchParams(search).has(CONTROL_FLAG);
